@@ -239,6 +239,8 @@ final class AppModel: ObservableObject {
     /// 去某个窗口。舞台模式下 = 请它上台。
     func focus(_ w: WindowInfo) {
         if stageActive {
+            // 附属窗口（台上 App 弹出来的看图 / 预览）：就是浮着的，点它 = 切过去
+            if stage.companions.contains(w.id) { system.focus(w.id); return }
             if !stage.isOnStage(w.id), handleActivation(w) { return }
             stage.present(w)
             stageChanged()
@@ -486,6 +488,7 @@ final class AppModel: ObservableObject {
         }
         stage.onRelayout = { [weak self] _ in self?.stageChanged() }
         stage.activationHandler = { [weak self] w in self?.handleActivation(w) ?? false }
+        stage.isSceneMember = { [weak self] w in self?.bestScene(containing: w) != nil }
         stageChanged()
         onStageChanged(true)
     }

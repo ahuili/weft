@@ -29,6 +29,8 @@ cat > $APP/Contents/Info.plist <<PLIST
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>Weft</string>
+  <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+  <key>CFBundleAllowMixedLocalizations</key><true/>
   <key>CFBundleDisplayName</key><string>Weft</string>
   <key>CFBundleExecutable</key><string>Weft</string>
   <key>CFBundlePackageType</key><string>APPL</string>

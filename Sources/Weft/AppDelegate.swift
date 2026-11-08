@@ -321,6 +321,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: p2, mouseButton: .left)?.post(tap: .cghidEventTap)
                 }
             }
+        case "hubquery":
+            // hubquery <文字>：打开总控并填好搜索词（查搜索结果用）
+            hub.show(); hub.state.query = a.dropFirst().joined(separator: " "); hub.state.rebuild(model)
+        case "appsearch":
+            // appsearch <out> <文字>：搜 App 的结果（查搜索用）
+            if a.count > 2 {
+                AppCatalog.shared.scan()
+                let r = AppCatalog.shared.search(a.dropFirst(2).joined(separator: " "), windows: model.windows, limit: 10)
+                let out = "total=\(AppCatalog.shared.all.count)\n" + r.map { "\($0.name) | \($0.altName) | \($0.id) | running=\($0.running)" }.joined(separator: "\n")
+                try? out.write(toFile: a[1], atomically: true, encoding: .utf8)
+            }
+        case "keyinfo":
+            // keyinfo <out>：哪个窗口是 key、谁有键盘焦点、Weft 自己的窗口都在哪（查「点了没反应」用）
+            if a.count > 1 {
+                var out = "active=\(NSApp.isActive) key=\(NSApp.keyWindow.map { "\(type(of: $0)) \($0.title) \(NSStringFromRect($0.frame))" } ?? "nil")\n"
+                out += "responder=\(NSApp.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")\n"
+                for w in NSApp.windows where w.isVisible { out += "  \(type(of: w)) '\(w.title)' \(NSStringFromRect(w.frame)) level=\(w.level.rawValue) canKey=\(w.canBecomeKey)\n" }
+                try? out.write(toFile: a[1], atomically: true, encoding: .utf8)
+            }
         case "settle": if a.count > 1 { try? model.stage.settleDebug().write(toFile: a[1], atomically: true, encoding: .utf8) }
         case "minimize": if a.count > 1, let id = UInt32(a[1]) { model.system.setMinimized(id, a.count > 2 ? a[2] != "0" : true) }
         case "focuswin": if a.count > 1, let id = UInt32(a[1]) { model.system.focus(id) }

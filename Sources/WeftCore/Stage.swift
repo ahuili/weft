@@ -243,6 +243,57 @@ public final class StageManager {
     /// 随手 App（bundleID）：窗口原样悬浮，不上台、不藏
     public var floatingApps = Set<String>()
 
+    // MARK: 附属窗口
+    //
+    // 台上的 App 自己弹出来的新窗口（微信看图、预览、设置面板、对话框……）：不当成新窗口，
+    // 不进格子、不问「放进哪一块」、不单独开场景，就在 App 放的位置浮着；它的 App 下台时一起退到后台。
+    // 想把它放进格子：从侧栏 / 总控点它的「放进舞台」。
+
+    /// 现在浮着的附属窗口
+    public var companions = Set<UInt32>()
+    /// 界面层告诉舞台：这个窗口是不是某个场景的成员（是的话不算附属窗口，照场景来）
+    public var isSceneMember: ((WindowInfo) -> Bool)?
+    /// 每个窗口第一次出现的时间（判断「刚弹出来的」）
+    private var firstSeen: [UInt32: Date] = [:]
+    private var seenBaseline = false
+    /// 弹出来多久以内算「刚弹出来」
+    public var freshWindow: TimeInterval = 4
+
+    /// 进舞台时：现在开着的都算「原来就有的」
+    func rebaseline(_ live: [WindowInfo]) { seenBaseline = false; firstSeen = [:]; companions = []; noteSeen(live) }
+
+    func noteSeen(_ live: [WindowInfo]) {
+        let now = Date()
+        // 第一次看到的这一批是原来就开着的，不算新弹出来
+        let stamp = seenBaseline ? now : .distantPast
+        for w in live where firstSeen[w.id] == nil { firstSeen[w.id] = stamp }
+        seenBaseline = true
+        let ids = Set(live.map(\.id))
+        firstSeen = firstSeen.filter { ids.contains($0.key) }
+        companions.formIntersection(ids)
+    }
+
+    /// 刚弹出来、而且它的 App 有窗口正在台上：返回台上那个窗口（它的「主窗口」）
+    public func companionParent(of w: WindowInfo, live: [WindowInfo]) -> WindowInfo? {
+        guard !isOnStage(w.id), !everStaged.contains(w.id), !stash.isStashed(w.id) else { return nil }
+        // 第一次见到它（还没记过）也算刚弹出来；原来就开着的在进舞台时已经记成「很早以前」
+        if let t = firstSeen[w.id], Date().timeIntervalSince(t) > freshWindow { return nil }
+        if firstSeen[w.id] == nil { firstSeen[w.id] = Date() }
+        if isSceneMember?(w) == true { return nil }
+        let on = onStage
+        return live.first { $0.id != w.id && $0.bundleID == w.bundleID && on.contains($0.id) }
+    }
+
+    /// 看看这个窗口是不是附属窗口；是就记下来（之后不进格子、不被藏）
+    @discardableResult
+    public func adoptCompanion(_ w: WindowInfo, live: [WindowInfo]) -> Bool {
+        if companions.contains(w.id) { return true }
+        guard let parent = companionParent(of: w, live: live) else { return false }
+        companions.insert(w.id)
+        log("附属窗口：\(w.appName)「\(w.title)」跟着 \(parent.title.isEmpty ? parent.appName : parent.title)，浮着不进格子")
+        return true
+    }
+
     public func stageable(_ w: WindowInfo) -> Bool {
         w.axAvailable && w.fixedSize != true && !fixed.contains(w.id) && !floatingApps.contains(w.bundleID)
             && (everStaged.contains(w.id) || (w.frame.width >= minSize.width && w.frame.height >= minSize.height))
@@ -298,6 +349,7 @@ public final class StageManager {
         let live = actions.windows()
         let prof = actions.profile()
         remember(live, prof)
+        rebaseline(live)
         for d in prof.displays {
             let here = live.filter { stageable($0) && !$0.isMinimized && !stash.isStashed($0.id) && $0.displayUUID == d.uuid }
                 .sorted { $0.zIndex < $1.zIndex }
@@ -351,6 +403,7 @@ public final class StageManager {
     public func present(_ w: WindowInfo, on display: String? = nil, slot: Int? = nil, focus: Bool = true) -> Bool {
         guard isActive else { return false }
         touch()
+        companions.remove(w.id)
         // 已经在台上
         if let (u, i) = locate(w.id), display == nil || display == u {
             if let slot, slot != i, slot < stages[u]!.slots.count {
@@ -478,6 +531,7 @@ public final class StageManager {
         let live = actions.windows()
         if !isActive {
             remember(live, actions.profile())
+            rebaseline(live)
             isActive = true
         }
         touch()
@@ -495,6 +549,7 @@ public final class StageManager {
             let ids = slots.compactMap { $0 }
             guard !ids.isEmpty else { continue }
             for id in ids {
+                companions.remove(id)
                 if let (u, i) = locate(id), u != s.display { stages[u]!.slots[i] = nil }
                 bringBack(byID[id]!)
                 home[id] = s.display
@@ -535,6 +590,7 @@ public final class StageManager {
         guard Date().timeIntervalSince(lastOwnAction) >= promoteDelay else { return .later }
         let w = actions.windows().first(where: { $0.id == id })
         guard let w, stageable(w), !w.isMinimized else { return .ignored }
+        if adoptCompanion(w, live: actions.windows()) { return .ignored }
         // 你在别的系统桌面上用窗口：那是舞台以外的地方，不管
         if let u = w.displayUUID, awayDisplays().contains(u) { return .ignored }
         // 界面层接管（场景模式：切到这个窗口所在的场景，或单独开一个新场景）
@@ -548,6 +604,7 @@ public final class StageManager {
     public func reconcile(mru: [UInt32] = []) {
         guard isActive, actions.canObserve else { return }
         let live = actions.windows()
+        noteSeen(live)
         let byID = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let prof = actions.profile()
         let settled = Date().timeIntervalSince(lastOwnAction) >= promoteDelay * 2
@@ -885,11 +942,17 @@ public final class StageManager {
     /// 已上台屏幕上的其他普通窗口退到后台
     @discardableResult
     private func sweep(_ live: [WindowInfo]) -> Set<UInt32> {
+        if !seenBaseline { noteSeen(live) }
         var hidden = Set<UInt32>()
         let stagedDisplays = Set(stages.keys).subtracting(awayDisplays())
         let on = onStage
         for w in live where stageable(w) && !w.isMinimized && !on.contains(w.id) && !stash.isStashed(w.id) {
             guard let u = w.displayUUID, stagedDisplays.contains(u) else { continue }
+            // 附属窗口：它的 App 还在台上就浮着；App 下台了就跟着退到后台（不再算附属）
+            if companions.contains(w.id) || adoptCompanion(w, live: live) {
+                if live.contains(where: { on.contains($0.id) && $0.bundleID == w.bundleID }) { continue }
+                companions.remove(w.id)
+            }
             if originals[w.id] == nil { originals[w.id] = w.frame }
             if home[w.id] == nil { home[w.id] = u }
             stash.stash(w, original: originals[w.id]!, byStage: true, near: home[w.id])

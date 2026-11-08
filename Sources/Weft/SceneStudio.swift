@@ -13,6 +13,8 @@ final class StudioState: ObservableObject {
     @Published var selected: String?
     @Published var search = ""
     @Published var previewDisplay: String?
+    /// 正在给第几格挑窗口（工作台里盖一层挑选面板）
+    @Published var pickSlot: Int?
 }
 
 @MainActor
@@ -65,6 +67,37 @@ struct StudioView: View {
         }
         .padding(.top, 28)
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay { picker }
+        .onChange(of: state.selected) { _, _ in state.pickSlot = nil }
+    }
+
+    /// 点一格 → 盖一层挑选面板（就在工作台窗口里，输入框点得动、能直接打字）
+    @ViewBuilder var picker: some View {
+        if let i = state.pickSlot, let c = current {
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { state.pickSlot = nil }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("放进「\(c.emoji) \(c.name)」的第 \(i + 1) 格").font(.system(size: 14, weight: .bold))
+                        Spacer()
+                        Button { state.pickSlot = nil } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 16)) }
+                            .buttonStyle(.plain).foregroundStyle(.secondary).keyboardShortcut(.cancelAction)
+                    }
+                    WindowPickList(model: model) { w in
+                        state.pickSlot = nil
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { model.setSceneSlot(c.id, i, w) }
+                    }
+                }
+                .padding(14)
+                .frame(width: 420, height: 520)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.purple.opacity(0.5), lineWidth: 1))
+                .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
+            }
+            .transition(.opacity)
+        }
     }
 
     var current: WorkContext? { model.contexts.first { $0.id == state.selected } }
@@ -233,7 +266,7 @@ struct StudioView: View {
                     let d = model.homeDisplay(c).flatMap { model.profile.display(uuid: $0) } ?? state.previewDisplay.flatMap { model.profile.display(uuid: $0) } ?? model.profile.main
                     let aspect = d.map { $0.visible.width / max($0.visible.height, 1) } ?? 1.6
                     let w = min(g.size.width, g.size.height * aspect), h = w / aspect
-                    SceneCanvas(model: model, scene: c, size: CGSize(width: w, height: h))
+                    SceneCanvas(model: model, scene: c, size: CGSize(width: w, height: h), onPick: { state.pickSlot = $0 })
                         .frame(width: g.size.width, height: g.size.height)
                 }
                 HStack(spacing: 8) {
@@ -338,6 +371,7 @@ struct SceneCanvas: View {
     @ObservedObject var model: AppModel
     let scene: WorkContext
     let size: CGSize
+    var onPick: (Int) -> Void = { _ in }
 
     var body: some View {
         let spec = scene.plan?.first?.spec ?? StageSpec(.focus)
@@ -348,7 +382,7 @@ struct SceneCanvas: View {
             RoundedRectangle(cornerRadius: 16).fill(LinearGradient(colors: [Color(white: 0.16), Color(white: 0.08)], startPoint: .top, endPoint: .bottom))
             ForEach(Array(frames.enumerated()), id: \.offset) { i, f in
                 SlotCell(model: model, sceneID: scene.id, index: i, slot: i < slots.count ? slots[i] : nil,
-                         size: CGSize(width: f.width / k, height: f.height / k))
+                         size: CGSize(width: f.width / k, height: f.height / k), onPick: { onPick(i) })
                     .offset(x: f.minX / k, y: f.minY / k)
             }
         }
@@ -363,8 +397,8 @@ struct SlotCell: View {
     let index: Int
     let slot: AppModel.SceneSlot?
     let size: CGSize
+    var onPick: () -> Void = {}
     @State private var targeted = false
-    @State private var picking = false
     @State private var hover = false
 
     var body: some View {
@@ -407,15 +441,12 @@ struct SlotCell: View {
                                                                   style: StrokeStyle(lineWidth: targeted ? 3 : 1, dash: w == nil ? [6, 4] : [])))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
-        .onTapGesture { picking = true }
+        .onTapGesture { onPick() }
         .dropDestination(for: String.self) { items, _ in
             guard let s = items.first, let id = UInt32(s), let w = model.window(id) else { return false }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { model.setSceneSlot(sceneID, index, w) }
             return true
         } isTargeted: { targeted = $0 }
-        .popover(isPresented: $picking, arrowEdge: .bottom) {
-            WindowPickList(model: model) { w in picking = false; model.setSceneSlot(sceneID, index, w) }
-        }
     }
 }
 
@@ -423,13 +454,18 @@ struct WindowPickList: View {
     @ObservedObject var model: AppModel
     var pick: (WindowInfo) -> Void
     @State private var q = ""
+    @FocusState private var searching: Bool
+    var list: [WindowInfo] { Array((q.isEmpty ? model.mruOrder() : FuzzyMatcher.rank(model.windows, query: q)).prefix(40)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("搜索窗口（支持拼音）", text: $q).textFieldStyle(.roundedBorder)
+                .focused($searching)
+                .onAppear { DispatchQueue.main.async { searching = true } }
+                .onSubmit { if let w = list.first { pick(w) } }
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(Array((q.isEmpty ? model.mruOrder() : FuzzyMatcher.rank(model.windows, query: q)).prefix(40))) { w in
+                    ForEach(list) { w in
                         Button { pick(w) } label: {
                             HStack(spacing: 8) {
                                 Image(nsImage: appIcon(w.pid)).resizable().frame(width: 18, height: 18)
@@ -445,7 +481,7 @@ struct WindowPickList: View {
                 }
             }
         }
-        .padding(10).frame(width: 320, height: 380)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -508,3 +544,4 @@ private struct BindRow: View {
         }
     }
 }
+

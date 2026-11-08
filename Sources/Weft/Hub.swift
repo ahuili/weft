@@ -22,6 +22,8 @@ final class HubState: ObservableObject {
     @Published var query = ""
     @Published var sections: [HubSection] = []
     @Published var selected: HubItem?
+    /// 搜索词匹配、但现在没有窗口的 App（退了 / 开着没窗口）：点一下打开
+    @Published var apps: [AppEntry] = []
     var flat: [HubItem] = []
     var columns = 4
 
@@ -53,6 +55,7 @@ final class HubState: ObservableObject {
             if !st.isEmpty { out.append(HubSection(id: "stash", title: "已停靠", emoji: "🅿️", color: .gray, windows: st)) }
         }
         sections = out
+        apps = q.isEmpty ? [] : AppCatalog.shared.search(q, windows: m.windows)
         flat = out.flatMap { s in s.windows.map { HubItem(section: s.id, window: $0.id) } }
         if selected == nil || !flat.contains(selected!) { selected = flat.first }
     }
@@ -98,7 +101,8 @@ struct HubView: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 26) {
                             ForEach(state.sections) { section in sectionView(section) }
-                            if state.sections.isEmpty {
+                            if !state.apps.isEmpty { appsSection }
+                            if state.sections.isEmpty && state.apps.isEmpty {
                                 Text(model.windows.isEmpty ? "还没读到窗口：请先在引导页授予辅助功能权限" : "没有匹配的窗口")
                                     .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 60)
                             }
@@ -195,6 +199,20 @@ struct HubView: View {
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
         .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    /// 没有窗口的 App：退了的、开着但没窗口的，搜得到、点一下打开
+    var appsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 2).fill(Color.gray).frame(width: 4, height: 18)
+                Text("📦  App（现在没有窗口）").font(.system(size: 16, weight: .bold))
+                Text(state.flat.isEmpty ? "↩ 打开第一个" : "点一下打开").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 10)], alignment: .leading, spacing: 6) {
+                ForEach(state.apps) { a in AppRow(app: a) { a in close(); AppCatalog.open(a) } }
+            }
+        }
     }
 
     func sectionView(_ s: HubSection) -> some View {
@@ -366,7 +384,10 @@ final class HubController: NSObject, NSWindowDelegate {
             return nil
         case kVK_Return, kVK_ANSI_KeypadEnter:
             if model.tidyVisible { model.runTidy(); state.rebuild(model); return nil }
-            guard let w = selectedWindow else { return nil }
+            guard let w = selectedWindow else {
+                if let a = state.apps.first { hide(); AppCatalog.open(a) }
+                return nil
+            }
             if cmd, let sec = state.sections.first(where: { $0.id == state.selected?.section }), let c = sec.context ?? model.context(of: w) {
                 hide(); model.enter(c)
             } else { hide(); model.focus(w) }

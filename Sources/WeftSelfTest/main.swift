@@ -724,6 +724,41 @@ do {
     check(!sm.stageable(w0), "随手 App 的窗口不上台（原样浮着）")
 }
 
+// 附属窗口：台上 App 自己弹出来的看图 / 预览窗口浮着，不进格子、不被藏、不问
+do {
+    let f = FakeWindows(sampleWindows(solo), solo)
+    let sm = StashManager(actions: f, store: Store(dir: tmp.appendingPathComponent("companion")))
+    let st = StageManager(actions: f, stash: sm); st.verifyDelay = 0; st.promoteDelay = 0; st.settleDelay = 0
+    st.enter(focused: 13)
+    st.reconcile()
+    check(!st.companions.contains(21), "原来就开着的窗口不算附属窗口")
+    // Chrome 在台上，它弹出一个新窗口（看图）
+    f.wins.append(win(14, "Google Chrome", "com.google.Chrome", "图片预览", CGRect(x: 200, y: 200, width: 800, height: 600), solo, z: 0))
+    check(st.focusChanged(14) == .ignored, "台上 App 弹出来的新窗口不上台、不问")
+    check(st.companions.contains(14), "记成附属窗口")
+    st.reconcile()
+    check(!sm.isStashed(14) && !st.isOnStage(14), "附属窗口浮着，不被藏")
+    // 别的 App 新开的窗口照旧
+    f.wins.append(win(51, "备忘录", "com.apple.Notes", "新备忘录", CGRect(x: 300, y: 300, width: 800, height: 600), solo, z: 0))
+    check(st.companionParent(of: f.wins.last!, live: f.wins) == nil, "别的 App 的新窗口不算附属")
+    // 场景成员不算附属
+    st.isSceneMember = { $0.id == 15 }
+    f.wins.append(win(15, "Google Chrome", "com.google.Chrome", "Gmail", CGRect(x: 300, y: 300, width: 800, height: 600), solo, z: 0))
+    check(st.companionParent(of: f.wins.last!, live: f.wins) == nil, "场景里的窗口不算附属")
+    st.isSceneMember = nil
+    // 主动放进舞台：不再是附属
+    _ = st.present(f.wins.first { $0.id == 14 }!)
+    check(!st.companions.contains(14) && st.isOnStage(14), "放进舞台后不再是附属窗口")
+    // App 下台：附属窗口跟着退到后台
+    f.wins.append(win(16, "Google Chrome", "com.google.Chrome", "另一张图", CGRect(x: 200, y: 200, width: 700, height: 500), solo, z: 0))
+    st.reconcile()
+    check(st.companions.contains(16), "新弹出的看图窗口浮着")
+    st.applySlots([("LAPTOP", StageSpec(.focus), [21])])
+    st.reconcile()
+    check(!st.isOnStage(13) && !st.isOnStage(14), "Chrome 下台了")
+    check(sm.isStashed(16) && !st.companions.contains(16), "App 下台后附属窗口跟着退到后台")
+}
+
 print("\n离线测试：\(passes) 通过，\(failures) 失败")
 
 // MARK: - 在线测试：真实模型 + 假窗口（weft-selftest --live [model]）

@@ -136,6 +136,7 @@ extension ShelfView {
                 .textFieldStyle(.plain).font(.system(size: 13)).focused($searchFocused)
                 .onSubmit {
                     if let w = FuzzyMatcher.rank(model.windows, query: state.query).first { activate(w) }
+                    else if let a = AppCatalog.shared.search(state.query, windows: model.windows).first { close(); AppCatalog.open(a) }
                 }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
@@ -281,13 +282,18 @@ extension ShelfView {
         let ws = Array(FuzzyMatcher.rank(model.windows, query: state.query).prefix(20))
         return VStack(alignment: .leading, spacing: 4) {
             title("🔎 搜索结果 · ↩ 第一个 · 数字键直达", ws.count)
-            if ws.isEmpty { Text("没有匹配的窗口").font(.system(size: 12)).foregroundStyle(.tertiary) }
+            let apps = AppCatalog.shared.search(state.query, windows: model.windows, limit: 4)
+            if ws.isEmpty && apps.isEmpty { Text("没有匹配的窗口").font(.system(size: 12)).foregroundStyle(.tertiary) }
             ForEach(Array(ws.enumerated()), id: \.element.id) { i, w in
                 HStack(spacing: 2) {
                     Text(i < 9 ? "\(i + 1)" : "").font(.system(size: 10, weight: .heavy, design: .rounded)).foregroundStyle(.purple)
                         .frame(width: 14)
                     WindowRow(model: model, window: w, showApp: true, activate: activate, peek: peek)
                 }
+            }
+            if !apps.isEmpty {
+                title(ws.isEmpty ? "📦 App（没有窗口）· ↩ 打开第一个" : "📦 App（没有窗口）", apps.count).padding(.top, 6)
+                ForEach(apps) { a in AppRow(app: a, compact: true) { a in close(); AppCatalog.open(a) } }
             }
         }
     }
@@ -396,6 +402,9 @@ struct WindowMenu: View {
         Button("放到\(model.stageActive ? "主位" : "左半屏")") { model.place(window, slot: 0) }
         Button("放到\(model.stageActive ? "副位" : "右半屏")") { model.place(window, slot: 1) }
         SlotMenu(model: model, window: window)
+        if model.stageActive && model.stage.companions.contains(window.id) {
+            Button("📎 这是附属窗口（浮着）· 放进舞台…") { model.stage.companions.remove(window.id); model.focus(window) }
+        }
         if model.stageActive && model.stage.isOnStage(window.id) {
             Button("请下台（退到后台）") { model.dismissFromStage(window.id) }
         }
