@@ -1,0 +1,7 @@
+{
+  "name": "weft-promo",
+  "private": true,
+  "type": "module",
+  "description": "Weft 介绍视频：虚构的示例窗口动画，用本机 Chrome 逐帧渲染，ffmpeg 合成",
+  "scripts": { "render": "node render.mjs" }
+}

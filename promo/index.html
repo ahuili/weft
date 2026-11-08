@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Weft 介绍</title>
+<!--
+  Weft 介绍视频的画面。所有窗口都是虚构的示例（没有任何真实屏幕内容）。
+  画面是时间 t（秒）的纯函数：window.renderAt(t)。render.mjs 逐帧调用并截图。
+  浏览器里直接打开也能预览（自动播放）；?t=12.5 停在某一时刻；?owner=xxx 换成 GitHub 用户名。
+-->
+<style>
+  :root {
+    --purple: #8b5cf6; --pink: #ec4899;
+    --font: -apple-system, "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; font-family: var(--font); }
+  #stage { position: absolute; inset: 0; overflow: hidden; }
+
+  /* 屏幕 */
+  .screen { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden; border-radius: 0; }
+  .wall { position: absolute; inset: 0;
+    background: radial-gradient(1200px 700px at 30% 20%, #c7b8ff 0%, transparent 60%),
+                radial-gradient(1100px 800px at 80% 80%, #f5b6d9 0%, transparent 55%),
+                linear-gradient(160deg, #a8a3c9 0%, #d9cfe6 50%, #b9b3cf 100%); }
+  .screen.ext .wall { background: radial-gradient(1200px 700px at 70% 30%, #b8d4ff 0%, transparent 60%),
+                radial-gradient(1000px 800px at 20% 85%, #d6c4ff 0%, transparent 55%),
+                linear-gradient(160deg, #9fb3cf 0%, #d3dbe9 50%, #aab6cc 100%); }
+  .menubar { position: absolute; left: 0; right: 0; top: 0; height: 30px; background: rgba(255,255,255,.35); backdrop-filter: blur(20px);
+    display: flex; align-items: center; padding: 0 18px; gap: 22px; font-size: 14px; color: #222; font-weight: 500; }
+  .menubar .sp { flex: 1; }
+  .menubar img { width: 18px; height: 18px; }
+
+  /* 窗口 */
+  .win { position: absolute; border-radius: 12px; overflow: hidden; background: #fff;
+    box-shadow: 0 22px 60px rgba(30,20,60,.28), 0 0 0 1px rgba(0,0,0,.08); will-change: transform; }
+  .win .bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #f3f2f6; border-bottom: 1px solid #e3e1ea; font-size: 13px; color: #444; white-space: nowrap; }
+  .win.dark .bar { background: #2a2a33; color: #ccc; border-color: #1c1c22; }
+  .dots { display: flex; gap: 7px; }
+  .dots i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .dots i:nth-child(1) { background: #ff5f57 } .dots i:nth-child(2) { background: #febc2e } .dots i:nth-child(3) { background: #28c840 }
+  .win .appico { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; font-size: 11px; color: #fff; font-weight: 700; }
+  .win .ttl { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; margin-right: 60px; }
+  .win .badge { position: absolute; right: 10px; top: 6px; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: linear-gradient(135deg, var(--purple), var(--pink)); color: #fff; font-weight: 600; opacity: 0; }
+  .win .body { position: absolute; top: 34px; left: 0; right: 0; bottom: 0; overflow: hidden; }
+
+  /* 窗口内容（全是占位条，按百分比排，窗口变形也好看） */
+  .ln { height: 9px; border-radius: 5px; background: #e6e4ee; margin: 10px 0; }
+  .code { background: #1e1e26; height: 100%; padding: 16px 0 0 0; display: flex; }
+  .code .gut { width: 44px; color: #555a; font: 11px/20px Menlo, monospace; text-align: right; padding-right: 10px; }
+  .code .src { flex: 1; font: 13px/20px Menlo, monospace; }
+  .code .row { height: 20px; display: flex; gap: 8px; align-items: center; }
+  .code .row b { height: 8px; border-radius: 4px; display: block; }
+  .side { position: absolute; left: 0; top: 0; bottom: 0; background: #f6f5f9; border-right: 1px solid #ebe9f1; padding: 14px 12px; }
+  .term { background: #121217; height: 100%; padding: 14px 16px; font: 13px/21px Menlo, monospace; color: #c9c9d6; white-space: pre; }
+  .term .g { color: #6ee7a8 } .term .p { color: #c4b5fd }
+  .browser .url { margin: 10px 14px; height: 26px; border-radius: 13px; background: #efeef4; font-size: 12px; color: #888; display: flex; align-items: center; padding-left: 14px; }
+  .browser .page { padding: 10px 28px; }
+  .browser h3 { font-size: 22px; color: #2b2840; margin: 6px 0 12px; }
+  .img { border-radius: 10px; margin: 12px 0; }
+  .chat .list { width: 34%; }
+  .chat .item { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .av { width: 34px; height: 34px; border-radius: 50%; flex: none; }
+  .chat .main { position: absolute; left: 34%; right: 0; top: 0; bottom: 0; padding: 18px; background: #f2f1f6; }
+  .bub { max-width: 70%; padding: 10px 14px; border-radius: 14px; margin: 10px 0; font-size: 13px; color: #333; background: #fff; }
+  .bub.me { margin-left: auto; background: #b9f0c6; }
+  .mail .row { display: flex; gap: 12px; padding: 12px 18px; border-bottom: 1px solid #f0eef4; align-items: center; }
+  .notes { background: #fffbe8; height: 100%; padding: 20px 26px; }
+  .notes h4 { font-size: 18px; color: #6b5a1f; margin-bottom: 12px; }
+  .cal { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: #ebe9f1; height: 100%; }
+  .cal > div { background: #fff; position: relative; padding: 8px; font-size: 11px; color: #999; }
+  .ev { position: absolute; left: 6px; right: 6px; border-radius: 6px; font-size: 11px; color: #fff; padding: 4px 6px; }
+  .ai { height: 100%; background: #faf9f6; padding: 24px 15%; position: relative; }
+  .ai .box { position: absolute; left: 12%; right: 12%; bottom: 22px; height: 52px; border-radius: 16px; border: 1px solid #e2ddd2; background: #fff; }
+  .board { display: flex; gap: 12px; padding: 16px; height: 100%; background: #f5f6fa; }
+  .board .col { flex: 1; background: #ebedf3; border-radius: 10px; padding: 10px; }
+  .board .card { background: #fff; border-radius: 8px; height: 54px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.06); padding: 8px; }
+  .finder .grid { position: absolute; left: 30%; right: 0; top: 0; bottom: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; padding: 22px; align-content: start; }
+  .finder .f { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11px; color: #555; }
+  .finder .f span { width: 64px; height: 50px; border-radius: 8px; background: linear-gradient(180deg, #7cc4ff, #3b9bf0); }
+  .sheet { display: grid; grid-template-columns: 60px repeat(6, 1fr); height: 100%; }
+  .sheet > div { border-right: 1px solid #eee; border-bottom: 1px solid #eee; height: 28px; }
+
+  /* 字幕、按键 */
+  #caption { position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); padding: 18px 36px; border-radius: 22px;
+    background: rgba(20,16,36,.72); backdrop-filter: blur(16px); color: #fff; text-align: center; min-width: 560px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  #caption .t { font-size: 34px; font-weight: 800; letter-spacing: 1px; }
+  #caption .s { font-size: 20px; color: #d8d2f0; margin-top: 6px; }
+  #keys { position: absolute; left: 50%; bottom: 190px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; color: #fff; font-size: 22px; font-weight: 600;
+    padding: 12px 20px; border-radius: 16px; background: rgba(20,16,36,.55); backdrop-filter: blur(10px); }
+  .kc { min-width: 46px; height: 46px; padding: 0 12px; border-radius: 10px; background: linear-gradient(#fff, #e7e5ef); color: #2a2440; display: grid; place-items: center;
+    font-size: 22px; font-weight: 700; box-shadow: 0 3px 0 #b9b4c9, 0 6px 14px rgba(0,0,0,.2); }
+
+  /* 版式盘 */
+  #palette { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 26px 30px; border-radius: 26px; background: rgba(250,248,255,.86);
+    backdrop-filter: blur(24px); box-shadow: 0 30px 80px rgba(40,20,80,.35); display: flex; gap: 18px; }
+  .lay { width: 120px; padding: 14px 10px 10px; border-radius: 16px; text-align: center; font-size: 15px; color: #444; }
+  .lay.on { background: rgba(139,92,246,.18); color: #3b1d8f; font-weight: 700; box-shadow: inset 0 0 0 2px var(--purple); }
+  .lay .ic { height: 62px; display: grid; gap: 4px; margin-bottom: 8px; }
+  .lay .ic i { background: #5b5670; border-radius: 4px; }
+  .lay.on .ic i { background: var(--purple); }
+
+  /* 场景卡片条 */
+  #strip { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 30px 34px 26px; border-radius: 28px; background: rgba(250,248,255,.86);
+    backdrop-filter: blur(24px); box-shadow: 0 30px 80px rgba(40,20,80,.35); }
+  #strip .hd { font-size: 20px; font-weight: 800; color: #2a2440; margin-bottom: 18px; display: flex; gap: 12px; align-items: center; }
+  #strip .hd span { font-size: 14px; font-weight: 600; padding: 3px 10px; border-radius: 10px; background: rgba(139,92,246,.2); color: #5b21b6; }
+  #strip .cards { display: flex; gap: 26px; }
+  .sc { width: 300px; text-align: center; }
+  .sc .pv { height: 170px; border-radius: 14px; background: #3a3550; padding: 10px; display: grid; gap: 6px; transition: none; }
+  .sc .pv i { border-radius: 6px; display: grid; place-items: center; font-size: 26px; }
+  .sc .nm { margin-top: 12px; font-size: 18px; color: #333; font-weight: 600; }
+  .sc.on .pv { box-shadow: 0 0 0 4px var(--purple), 0 0 34px rgba(139,92,246,.6); }
+  .sc.on .nm { color: #3b1d8f; font-weight: 800; }
+  .sc .now { font-size: 12px; color: #fff; background: #22c55e; border-radius: 8px; padding: 2px 8px; margin-left: 6px; }
+
+  /* 双屏 */
+  .bezel { position: absolute; border-radius: 22px; background: #1b1a22; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .base { position: absolute; background: linear-gradient(#cfcdd6, #9d9aa8); border-radius: 0 0 18px 18px; }
+  .stand { position: absolute; background: linear-gradient(90deg, #8e8b98, #c9c7d1, #8e8b98); }
+  .label { position: absolute; padding: 10px 20px; border-radius: 16px; background: rgba(255,255,255,.12); color: #fff; font-size: 22px; font-weight: 700; white-space: nowrap; transform: translateX(-50%); border: 1px solid rgba(255,255,255,.18); }
+  .label small { font-weight: 500; color: #c9c3e6; margin-right: 10px; font-size: 18px; }
+  #link { position: absolute; width: 74px; height: 74px; border-radius: 50%; display: grid; place-items: center; font-size: 34px; background: linear-gradient(135deg, var(--purple), var(--pink));
+    box-shadow: 0 0 40px rgba(236,72,153,.6); transform: translate(-50%,-50%); }
+  #pulse { position: absolute; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 0 30px 10px rgba(236,72,153,.8); transform: translate(-50%,-50%); }
+  #menu { position: absolute; width: 360px; border-radius: 14px; background: rgba(250,248,255,.96); box-shadow: 0 20px 50px rgba(0,0,0,.35); padding: 8px; font-size: 18px; color: #333; }
+  #menu .mi { padding: 9px 14px; border-radius: 8px; }
+  #menu .mi.on { background: var(--purple); color: #fff; }
+  #menu hr { border: 0; border-top: 1px solid #ddd; margin: 6px 4px; }
+  #menuBtn { position: absolute; padding: 10px 18px; border-radius: 12px; background: #fff; color: #333; font-size: 18px; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+
+  /* 放进哪一块卡片 */
+  #chooser { position: absolute; left: 570px; top: 50px; width: 780px; height: 262px; border-radius: 22px; background: rgba(250,248,255,.92); backdrop-filter: blur(24px);
+    box-shadow: 0 24px 70px rgba(40,20,80,.35), 0 0 0 1.5px rgba(139,92,246,.5); padding: 18px 20px; }
+  #chooser .h1 { font-size: 18px; font-weight: 800; color: #2a2440; }
+  #chooser .h2 { font-size: 14px; color: #777; margin-top: 4px; }
+  #chooser .btn { position: absolute; top: 22px; height: 40px; border-radius: 20px; background: rgba(0,0,0,.06); display: grid; place-items: center; font-size: 15px; font-weight: 600; color: #333; }
+  #chooser .btn.hot { background: linear-gradient(135deg, var(--purple), var(--pink)); color: #fff; }
+  #chooser .mini { position: absolute; left: 20px; top: 92px; width: 280px; height: 150px; border-radius: 10px; background: rgba(0,0,0,.35); display: grid; grid-template-columns: 2fr 3fr; gap: 6px; padding: 6px; }
+  #chooser .mini i { border-radius: 6px; background: rgba(255,255,255,.18); display: grid; place-items: center; color: #fff; font-size: 13px; font-style: normal; }
+  #chooser .add { position: absolute; left: 316px; top: 92px; width: 110px; height: 150px; border-radius: 10px; border: 1.5px dashed rgba(0,0,0,.25); display: grid; place-items: center; font-size: 14px; color: #555; }
+  #toast { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); padding: 14px 26px; border-radius: 18px; background: rgba(20,16,36,.8); color: #fff; font-size: 20px; font-weight: 600; white-space: nowrap; }
+
+  /* 场景工作台 */
+  #studio { position: absolute; left: 230px; top: 110px; width: 1460px; height: 780px; border-radius: 18px; background: #f4f3f8; box-shadow: 0 40px 100px rgba(30,10,60,.45), 0 0 0 1px rgba(0,0,0,.1); overflow: hidden; }
+  #studio .bar { height: 44px; display: flex; align-items: center; padding: 0 16px; gap: 8px; font-size: 15px; font-weight: 700; color: #444; border-bottom: 1px solid #e3e1ea; }
+  #studio .left { position: absolute; left: 0; top: 44px; bottom: 0; width: 360px; border-right: 1px solid #e3e1ea; padding: 22px 18px; }
+  #studio .left h2 { font-size: 26px; color: #222; margin-bottom: 14px; }
+  #studio .row { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 10px; font-size: 17px; color: #333; }
+  #studio .row.sel { background: rgba(139,92,246,.18); font-weight: 700; }
+  #studio .row small { display: block; font-size: 12px; color: #888; font-weight: 400; }
+  #askHd { position: absolute; left: 20px; bottom: 140px; font-size: 14px; font-weight: 700; color: #888; }
+  #ask { position: absolute; left: 18px; right: 18px; bottom: 30px; min-height: 76px; border-radius: 16px; background: rgba(0,0,0,.045); border: 1.5px solid rgba(0,0,0,.1);
+    padding: 12px 54px 12px 46px; font-size: 16px; line-height: 24px; color: #222; }
+  #ask.focus { border-color: var(--purple); background: rgba(139,92,246,.06); box-shadow: 0 0 0 4px rgba(139,92,246,.12); }
+  #ask .spark { position: absolute; left: 14px; top: 13px; font-size: 20px; color: var(--purple); }
+  #ask .ph { color: #9a96a8; }
+  #ask .caret { display: inline-block; width: 2px; height: 20px; background: var(--purple); vertical-align: -4px; margin-left: 1px; }
+  #ask .send { position: absolute; right: 10px; bottom: 10px; width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, var(--purple), var(--pink)); color: #fff;
+    display: grid; place-items: center; font-size: 18px; font-weight: 900; box-shadow: 0 3px 10px rgba(139,92,246,.45); }
+  #studio .main { position: absolute; left: 360px; right: 0; top: 44px; bottom: 0; padding: 28px 34px; }
+  #studio .main h3 { font-size: 22px; color: #2a2440; margin-bottom: 6px; }
+  #studio .main .sum { font-size: 15px; color: #777; margin-bottom: 20px; }
+  .pgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .pc { border-radius: 16px; background: #fff; padding: 14px; box-shadow: 0 6px 20px rgba(40,20,80,.08), 0 0 0 1px rgba(0,0,0,.05); }
+  .pc .pv { height: 120px; border-radius: 10px; background: #3a3550; padding: 7px; display: grid; gap: 5px; }
+  .pc .pv i { border-radius: 5px; display: grid; place-items: center; font-size: 20px; font-style: normal; }
+  .pc .nm { margin-top: 10px; font-size: 17px; font-weight: 700; color: #2a2440; }
+  .pc .why { font-size: 13px; color: #888; margin-top: 3px; }
+  .chips { margin-top: 18px; display: flex; gap: 10px; align-items: center; font-size: 15px; color: #555; }
+  .chip { padding: 6px 14px; border-radius: 14px; background: rgba(139,92,246,.14); color: #4c1d95; font-weight: 600; }
+  .cta { position: absolute; right: 34px; bottom: 28px; padding: 14px 26px; border-radius: 14px; background: linear-gradient(135deg, var(--purple), var(--pink)); color: #fff; font-size: 17px; font-weight: 700; }
+  .spin { width: 18px; height: 18px; border-radius: 50%; border: 3px solid rgba(255,255,255,.4); border-top-color: #fff; }
+
+  /* 片头片尾 */
+  .full { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; text-align: center;
+    background: radial-gradient(900px 600px at 50% 40%, #3b2a6e 0%, #140f24 70%); }
+  .full img { width: 200px; height: 200px; filter: drop-shadow(0 20px 50px rgba(139,92,246,.6)); }
+  .full h1 { font-size: 110px; font-weight: 900; letter-spacing: 6px; margin-top: 18px;
+    background: linear-gradient(135deg, #fff 30%, #d8b4fe); -webkit-background-clip: text; color: transparent; }
+  .full p { font-size: 34px; color: #d8d2f0; margin-top: 12px; }
+  .full .cmd { margin-top: 44px; font: 30px Menlo, monospace; padding: 20px 34px; border-radius: 16px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); }
+  .full .cmd b { color: #a78bfa; font-weight: 400; }
+  .full .feat { margin-top: 34px; display: flex; gap: 18px; font-size: 22px; }
+  .full .feat span { padding: 8px 18px; border-radius: 14px; background: rgba(255,255,255,.08); }
+  .full .url { margin-top: 30px; font-size: 24px; color: #a59cc9; }
+
+  #cursor { position: absolute; width: 34px; height: 44px; transform-origin: 4px 4px; }
+  #ring { position: absolute; width: 60px; height: 60px; border-radius: 50%; border: 3px solid var(--purple); transform: translate(-50%,-50%); }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+// ---------- 工具 ----------
+const W = 1920, H = 1080, TOP = 30;
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => (x = clamp(x), x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const easeOut = x => 1 - Math.pow(1 - clamp(x), 3);
+const back = x => { x = clamp(x); const c = 1.5; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const fade = (t, a, b, f = .4) => Math.min(seg(t, a, a + f), 1 - seg(t, b - f, b)); // a~b 之间淡入淡出
+const lerp = (a, b, p) => a + (b - a) * p;
+const lerpR = (r, s, p) => ({ x: lerp(r.x, s.x, p), y: lerp(r.y, s.y, p), w: lerp(r.w, s.w, p), h: lerp(r.h, s.h, p) });
+const el = (tag, cls, html, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; if (parent) parent.appendChild(e); return e; };
+const css = (e, o) => { for (const k in o) e.style[k] = o[k]; return e; };
+const P = new URLSearchParams(location.search);
+const OWNER = P.get('owner') || 'OWNER';
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+// ---------- 窗口内容（全是虚构的占位） ----------
+const bars = (n, w0 = 50, w1 = 95, c = '#e6e4ee') => Array.from({ length: n }, () => `<div class="ln" style="width:${w0 + rnd() * (w1 - w0)}%;background:${c}"></div>`).join('');
+const C = {
+  code: () => { const cols = ['#c792ea', '#82aaff', '#c3e88d', '#f78c6c', '#89ddff', '#ffcb6b', '#676e95'];
+    let g = '', s = ''; for (let i = 1; i <= 46; i++) { g += i + '<br>'; const ind = (i % 7 > 2 ? 1 : 0) * 24 + (i % 11 > 6 ? 24 : 0);
+      s += `<div class="row" style="padding-left:${ind}px">` + Array.from({ length: 1 + (i * 7) % 4 }, (_, k) => `<b style="width:${30 + ((i * 13 + k * 29) % 110)}px;background:${cols[(i + k * 3) % cols.length]}"></b>`).join('') + '</div>'; }
+    return `<div class="code"><div class="gut">${g}</div><div class="src">${s}</div></div>`; },
+  term: () => `<div class="term"><span class="p">~/project $</span> swift build
+Building for production...
+[42/42] Linking app
+<span class="g">Build complete! (8.21s)</span>
+<span class="p">~/project $</span> make test
+Running 177 tests...
+<span class="g">✓ 177 passed, 0 failed</span>
+<span class="p">~/project $</span> git status
+On branch main
+nothing to commit, working tree clean
+<span class="p">~/project $</span> █</div>`,
+  docs: () => `<div class="browser"><div class="url">docs.example.com/guide/layouts</div><div class="page"><h3>布局指南</h3>${bars(3)}<div class="img" style="height:140px;background:linear-gradient(135deg,#c7d2fe,#e9d5ff)"></div>${bars(8)}</div></div>`,
+  board: () => `<div class="board">${['待办', '进行中', '已完成'].map((n, i) => `<div class="col"><div style="font-size:12px;color:#666;margin-bottom:8px;font-weight:600">${n}</div>${Array.from({ length: 4 - i % 2 }, (_, k) => `<div class="card"><div class="ln" style="width:${60 + (k * 17) % 35}%;margin:4px 0"></div><div class="ln" style="width:30%;margin:8px 0 0;background:${['#c4b5fd', '#fbcfe8', '#bbf7d0'][(k + i) % 3]}"></div></div>`).join('')}</div>`).join('')}</div>`,
+  chat: () => `<div class="chat"><div class="side list">${Array.from({ length: 9 }, (_, i) => `<div class="item"><div class="av" style="background:hsl(${i * 47 % 360},55%,70%)"></div><div style="flex:1">${bars(1, 40, 70, '#dddbe6')}${bars(1, 60, 90, '#ecebf2')}</div></div>`).join('')}</div>
+    <div class="main"><div class="bub">周五下午的评审还开吗？</div><div class="bub me">开，三点，我订会议室</div><div class="bub">好的，我把文档先发群里</div><div class="bub me">👍</div><div class="bub">顺便看下新版的截图</div></div></div>`,
+  mail: () => `<div class="mail">${Array.from({ length: 12 }, (_, i) => `<div class="row"><div class="av" style="width:28px;height:28px;background:hsl(${200 + i * 23},50%,72%)"></div><div style="flex:1">${bars(1, 25, 45, '#d8d6e2')}${bars(1, 55, 90)}</div><div style="font-size:11px;color:#aaa">${9 + (i % 8)}:${(i * 7) % 6}0</div></div>`).join('')}</div>`,
+  notes: () => `<div class="notes"><h4>本周要做</h4>${bars(9, 40, 90, '#efe3b0')}</div>`,
+  cal: () => `<div class="cal">${['周一', '周二', '周三', '周四', '周五'].map((d, i) => `<div>${d}<div class="ev" style="top:${40 + (i * 37) % 120}px;height:${60 + (i * 23) % 50}px;background:${['#8b5cf6', '#ec4899', '#3b82f6', '#10b981', '#f59e0b'][i]}">${['评审', '设计', '周会', '对接', '复盘'][i]}</div><div class="ev" style="top:${230 + (i * 41) % 140}px;height:44px;background:#94a3b8">专注</div></div>`).join('')}</div>`,
+  ai: () => `<div class="ai"><div style="font-size:20px;color:#3a3530;font-weight:600;margin-bottom:16px">今天想做点什么？</div>${bars(3, 50, 85, '#ebe6da')}<div class="bub me" style="background:#ede9e1;margin-top:20px">帮我把这段说明改得更清楚</div>${bars(4, 60, 95, '#ebe6da')}<div class="box"></div></div>`,
+  finder: () => `<div class="finder"><div class="side" style="width:30%">${bars(7, 50, 85, '#dfdde8')}</div><div class="grid">${['文档', '下载', '截图', '项目', '设计稿', '归档', '照片', '音乐'].map(n => `<div class="f"><span></span>${n}</div>`).join('')}</div></div>`,
+  sheet: () => `<div class="sheet">${Array.from({ length: 7 * 26 }, (_, i) => `<div style="${i < 7 ? 'background:#f3f2f7' : ''}"></div>`).join('')}</div>`,
+};
+const APPS = {
+  editor: ['编辑器 — main.swift', '#3b82f6', '‹›', 'code', 1], term: ['终端 — ~/project', '#111', '>_', 'term', 1],
+  docs: ['浏览器 — 布局指南', '#f59e0b', '◎', 'docs'], board: ['浏览器 — 项目看板', '#f59e0b', '◎', 'board'],
+  chat: ['聊天', '#22c55e', '聊', 'chat'], mail: ['邮件 — 收件箱', '#0ea5e9', '✉', 'mail'], notes: ['笔记', '#eab308', '✎', 'notes'],
+  cal: ['日历', '#ef4444', '31', 'cal'], ai: ['AI 助手', '#d97757', '✦', 'ai'], finder: ['访达 — 下载', '#3b82f6', '☺', 'finder'],
+  sheet: ['表格 — 排期', '#16a34a', '▦', 'sheet'],
+};
+
+// ---------- 屏幕和窗口 ----------
+const stage = document.getElementById('stage');
+function makeScreen(cls) {
+  const s = el('div', 'screen ' + cls, null, stage);
+  el('div', 'wall', null, s);
+  el('div', 'menubar', `<img src="../assets/Weft-icon-1024.png"><span style="font-weight:700">Weft</span><span>文件</span><span>编辑</span><span>窗口</span><span class="sp"></span><span>周五 9:41</span>`, s);
+  s.wins = {};
+  return s;
+}
+function makeWin(screen, id, appKey) {
+  const [title, color, glyph, kind, dark] = APPS[appKey];
+  const w = el('div', 'win' + (dark ? ' dark' : ''), `<div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="appico" style="background:${color}">${glyph}</div><div class="ttl">${title}</div></div><div class="body">${C[kind]()}</div><div class="badge">🪶 随手</div>`, screen);
+  screen.wins[id] = w;
+  return w;
+}
+const A = makeScreen('laptop');
+const B = makeScreen('ext');
+['editor', 'term', 'docs', 'board', 'chat', 'mail', 'notes', 'cal', 'ai', 'finder'].forEach(k => makeWin(A, k, k));
+const bmap = { bdocs: 'docs', bsheet: 'sheet', bcal: 'cal', bboard: 'board', bnotes: 'notes' };
+for (const k in bmap) makeWin(B, k, bmap[k]);
+
+// 版式（屏幕坐标，桌面在菜单栏下面）
+const G = 18, DX = G, DY = TOP + G, DW = W - 2 * G, DH = H - TOP - 2 * G;
+const split = (r, f, vertical) => vertical
+  ? [{ x: r.x, y: r.y, w: r.w, h: r.h * f - G / 2 }, { x: r.x, y: r.y + r.h * f + G / 2, w: r.w, h: r.h * (1 - f) - G / 2 }]
+  : [{ x: r.x, y: r.y, w: r.w * f - G / 2, h: r.h }, { x: r.x + r.w * f + G / 2, y: r.y, w: r.w * (1 - f) - G / 2, h: r.h }];
+const D = { x: DX, y: DY, w: DW, h: DH };
+const [codeL, codeR] = split(D, .6); const [codeR1, codeR2] = split(codeR, .45, true);
+const [chatL, chatR] = split(D, .42);
+const L = {
+  mess: { editor: { x: 160, y: 120, w: 980, h: 640 }, docs: { x: 820, y: 80, w: 900, h: 620 }, chat: { x: 90, y: 360, w: 820, h: 560 }, mail: { x: 1060, y: 330, w: 760, h: 520 },
+    notes: { x: 1380, y: 560, w: 460, h: 420 }, term: { x: 520, y: 520, w: 760, h: 440 }, cal: { x: 1240, y: 150, w: 600, h: 430 }, ai: { x: 330, y: 200, w: 700, h: 560 }, board: { x: 640, y: 240, w: 860, h: 560 } },
+  code: { editor: codeL, term: codeR1, docs: codeR2 },
+  chat: { chat: chatL, mail: chatR },
+};
+L.chatF = { ...L.chat, finder: { x: 1040, y: 300, w: 760, h: 520 } };
+L.codeF = { ...L.code, finder: L.chatF.finder };
+const [bL, bR] = split(D, .5); const [bR1, bR2] = split(bR, .5, true);
+L.sched = { bcal: bL, bboard: bR };
+L.bdocs = { bdocs: bL, bsheet: bR1, bnotes: bR2 };
+
+// 每块屏的版式时间线：[开始时间, 版式, 用时]
+const TL_A = [[0, null, 0], [4.2, 'mess', 0], [13.0, 'code', 1.0], [22.6, 'chat', .8], [31.5, 'code', .8], [34.5, 'chat', .8], [38.4, 'chatF', .5], [43.6, 'codeF', .8]];
+const TL_B = [[0, 'sched', 0], [31.65, 'bdocs', .8], [34.65, 'sched', .8]];
+const MESS_ORDER = ['editor', 'docs', 'chat', 'mail', 'notes', 'term', 'cal', 'ai', 'board'];
+const Z = { mess: MESS_ORDER };
+
+function placeWins(scr, tl, t) {
+  let i = 0; while (i + 1 < tl.length && tl[i + 1][0] <= t) i++;
+  const [t0, cur, dur] = tl[i]; const prev = i > 0 ? tl[i - 1][1] : null;
+  const p = dur ? ease((t - t0) / dur) : 1;
+  const Lc = cur ? L[cur] : {}, Lp = prev ? L[prev] : {};
+  for (const id in scr.wins) {
+    const w = scr.wins[id]; const a = Lp[id], b = Lc[id];
+    let r, op = 1, sc = 1;
+    const off = r0 => ({ x: -r0.w * .55, y: r0.y + 40, w: r0.w * .8, h: r0.h * .8 });
+    if (a && b) r = lerpR(a, b, p);
+    else if (b) { // 进场：从后台（左边屏外）回来
+      if (cur === 'mess') { const k = MESS_ORDER.indexOf(id); const q = easeOut(seg(t, 4.3 + k * .28, 4.3 + k * .28 + .45)); r = b; op = q; sc = .9 + .1 * q; }
+      else if (id === 'finder' && !a) { r = b; op = easeOut(p); sc = .85 + .15 * back(p); }
+      else { r = lerpR(off(b), b, p); op = p; }
+    }
+    else if (a) { r = lerpR(a, off(a), p); op = 1 - p; } // 退场：滑到后台
+    else { w.style.opacity = 0; continue; }
+    css(w, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', opacity: op, transform: `scale(${sc})` });
+    w.style.zIndex = id === 'finder' ? 50 : cur === 'mess' ? MESS_ORDER.indexOf(id) + 1 : (b ? 10 : 1);
+    w.querySelector('.badge').style.opacity = id === 'finder' ? seg(t, 41.6, 42.0) : 0;
+  }
+}
+
+// ---------- 覆盖层 ----------
+const over = el('div', null, null, stage); css(over, { position: 'absolute', inset: 0, zIndex: 10 });
+const dim = el('div', null, null, over); css(dim, { position: 'absolute', inset: 0, background: 'rgba(20,14,40,.45)' });
+const caption = el('div', null, '<div class="t"></div><div class="s"></div>', over); caption.id = 'caption';
+const keys = el('div', null, '', over); keys.id = 'keys';
+const palette = el('div', null, [['专注', '1fr', '1fr', [[1, 1, 1, 1]]], ['铺满', '1fr', '1fr', [[1, 1, 1, 1]]], ['左右', '1fr 1fr', '1fr', [[1, 1, 1, 1], [2, 1, 1, 1]]],
+  ['一主两辅', '3fr 2fr', '1fr 1fr', [[1, 1, 1, 2], [2, 1, 1, 1], [2, 2, 1, 1]]], ['三栏', '1fr 1fr 1fr', '1fr', [[1, 1, 1, 1], [2, 1, 1, 1], [3, 1, 1, 1]]],
+  ['四宫格', '1fr 1fr', '1fr 1fr', [[1, 1, 1, 1], [2, 1, 1, 1], [1, 2, 1, 1], [2, 2, 1, 1]]]].map(([n, gc, gr, cells], i) =>
+  `<div class="lay" data-i="${i}"><div class="ic" style="grid-template-columns:${gc};grid-template-rows:${gr};${i === 0 ? 'padding:8px 22px' : ''}">${cells.map(([c, r, cs, rs]) => `<i style="grid-column:${c}/span ${cs};grid-row:${r}/span ${rs}"></i>`).join('')}</div>${n}</div>`).join(''), over);
+palette.id = 'palette';
+const pv = (gc, gr, cells) => `<div class="pv" style="grid-template-columns:${gc};grid-template-rows:${gr}">${cells.map(([c, r, cs, rs, bg, ic]) => `<i style="grid-column:${c}/span ${cs};grid-row:${r}/span ${rs};background:${bg}">${ic}</i>`).join('')}</div>`;
+const SCN = [
+  ['💻', '写代码', pv('3fr 2fr', '1fr 1fr', [[1, 1, 1, 2, '#334', '‹›'], [2, 1, 1, 1, '#222', '>_'], [2, 2, 1, 1, '#f5e6c8', '◎']])],
+  ['💬', '回消息', pv('2fr 3fr', '1fr', [[1, 1, 1, 1, '#c8f0d2', '聊'], [2, 1, 1, 1, '#d6ecfa', '✉']])],
+  ['📖', '看资料', pv('1fr 1fr', '1fr', [[1, 1, 1, 1, '#f5e6c8', '◎'], [2, 1, 1, 1, '#fff6cc', '✎']])],
+  ['📝', '写周报', pv('1fr', '1fr', [[1, 1, 1, 1, '#f3ece0', '✦']])],
+];
+const strip = el('div', null, `<div class="hd">场景 <span>笔记本</span></div><div class="cards">${SCN.map(([e, n, p], i) => `<div class="sc" data-i="${i}">${p}<div class="nm">${e} ${n}${i === 0 ? '<span class="now">正在这块屏</span>' : ''}</div></div>`).join('')}</div>`, over);
+strip.id = 'strip';
+
+// 双屏
+const bezA = el('div', 'bezel', null, stage), baseA = el('div', 'base', null, stage), bezB = el('div', 'bezel', null, stage), standB = el('div', 'stand', null, stage), footB = el('div', 'stand', null, stage);
+[bezA, baseA, bezB, standB, footB].forEach(e => stage.insertBefore(e, A));
+const labA = el('div', 'label', '', over), labB = el('div', 'label', '', over);
+const link = el('div', null, '🔗', over); link.id = 'link';
+const pulse = el('div', null, '', over); pulse.id = 'pulse';
+const menuBtn = el('div', null, '🔗 扩展屏1跟着切：📅 日程 ▾', over); menuBtn.id = 'menuBtn';
+const menu = el('div', null, `<div class="mi">不跟（解绑）</div><hr><div class="mi on">✓ 📅 日程</div><div class="mi">📖 看文档</div><div class="mi">📊 看板</div>`, over); menu.id = 'menu';
+
+// 放进哪一块
+const chooser = el('div', null, `<div class="h1">「访达」单独开了一个新场景</div><div class="h2">要放进「💬 回消息」吗？点一块，它就换进那里</div>
+  <div class="btn hot" style="left:450px;width:160px">🪶 以后随手</div><div class="btn" style="left:624px;width:136px">◔ 保持单独</div>
+  <div class="mini"><i>聊天</i><i>邮件</i></div><div class="add">＋ 多加一格</div>
+  <div style="position:absolute;left:446px;top:110px;width:310px;font-size:14px;color:#666;line-height:22px">随开随关的窗口（访达、预览、系统设置）点「以后随手」：不进场景、不再问，开了就浮在上面</div>`, over);
+chooser.id = 'chooser';
+const toast = el('div', null, '🪶 访达 以后是随手窗口：开了就浮在上面，切场景也不藏', over); toast.id = 'toast';
+
+// 场景工作台
+const REQ = 'AI 助手有时单独、有时配聊天；浏览器几个窗口分开放；访达随时会开';
+const PROPS = [
+  ['🧠', 'AI 助手 · 专注', '一个人安静写东西', pv('1fr', '1fr', [[1, 1, 1, 1, '#f3ece0', '✦']])],
+  ['💬', '边聊边写', 'AI 助手 + 聊天，左右放', pv('3fr 2fr', '1fr', [[1, 1, 1, 1, '#f3ece0', '✦'], [2, 1, 1, 1, '#c8f0d2', '聊']])],
+  ['💻', '写代码', '编辑器 + 终端 + 文档页', pv('3fr 2fr', '1fr 1fr', [[1, 1, 1, 2, '#334', '‹›'], [2, 1, 1, 1, '#222', '>_'], [2, 2, 1, 1, '#f5e6c8', '◎']])],
+  ['📊', '项目看板 🔗', '浏览器·看板 + 日历，放大屏', pv('1fr 1fr', '1fr', [[1, 1, 1, 1, '#e0e7ff', '◎'], [2, 1, 1, 1, '#fde2e2', '31']])],
+  ['✉️', '回邮件', '邮件 + 笔记', pv('3fr 2fr', '1fr', [[1, 1, 1, 1, '#d6ecfa', '✉'], [2, 1, 1, 1, '#fff6cc', '✎']])],
+  ['📖', '看资料', '浏览器·文档 + 笔记', pv('1fr 1fr', '1fr', [[1, 1, 1, 1, '#f5e6c8', '◎'], [2, 1, 1, 1, '#fff6cc', '✎']])],
+];
+const studio = el('div', null, `<div class="bar"><div class="dots"><i></i><i></i><i></i></div><div style="flex:1;text-align:center;margin-right:60px">Weft 场景</div></div>
+  <div class="left"><h2>场景</h2>${[['💻', '写代码', '一主两辅 · 3 个窗口'], ['💬', '回消息', '左右 · 2 个窗口'], ['📅', '日程', '左右 · 2 个窗口 🔗'], ['📖', '看文档', '三栏 · 3 个窗口 🔗']].map(([e, n, s], i) => `<div class="row${i === 0 ? ' sel' : ''}"><span style="font-size:22px">${e}</span><div>${n}<small>${s}</small></div></div>`).join('')}
+  <div id="askHd">AI 帮我建一批</div><div id="ask"><span class="spark">✦</span><span class="tx"></span><div class="send">↑</div></div></div>
+  <div class="main"><h3></h3><div class="sum"></div><div class="pgrid">${PROPS.map(([e, n, w, p]) => `<div class="pc">${p}<div class="nm">${e} ${n}</div><div class="why">${w}</div></div>`).join('')}</div>
+  <div class="chips"><span>🪶 建议设成随手：</span><span class="chip">访达</span><span class="chip">预览</span><span style="color:#999">随开随关，不放进场景</span></div><div class="cta">加入 AI 建议的 6 个场景</div></div>`, over);
+studio.id = 'studio';
+
+// 片头片尾
+const intro = el('div', 'full', `<img src="../assets/Weft-icon-1024.png"><h1>Weft</h1><p>窗口开得再多，眼前也只留你现在要用的那几个</p>`, over);
+const outro = el('div', 'full', `<img src="../assets/Weft-icon-1024.png" style="width:150px;height:150px"><h1 style="font-size:84px">Weft</h1>
+  <div class="feat"><span>🎭 舞台模式</span><span>🎬 场景</span><span>🔗 跨屏绑定</span><span>🪶 随手窗口</span><span>✨ AI 整理</span></div>
+  <div class="cmd"><b>$</b> brew install --cask ${OWNER}/tap/weft</div><div class="url">github.com/${OWNER}/weft · 开源 · MIT · macOS 14+</div>`, over);
+
+// 鼠标
+const cursor = el('div', null, `<svg width="34" height="44" viewBox="0 0 34 44"><path d="M4 3 L4 35 L12 27 L18 41 L24 38 L18 25 L29 25 Z" fill="#111" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/></svg>`, over);
+cursor.id = 'cursor';
+const ring = el('div', null, '', over); ring.id = 'ring';
+const CUR = [[38.6, 1500, 760], [40.6, 1110, 96], [41.2, 1110, 96], [42.6, 1250, 300], [47.0, 900, 700], [47.6, 560, 780], [51.0, 560, 780], [51.5, 615, 855], [52.4, 615, 855], [53.5, 1100, 760]];
+const CLICKS = [41.2, 51.5];
+
+// ---------- 每一帧 ----------
+const CAPS = [
+  [4.0, 10.0, '窗口越开越多', '真正要用的那几个，永远被压在下面'],
+  [10.0, 18.0, '舞台模式', '双击右 ⌘ 选个版式：眼前只留要用的几个，其余退到后台'],
+  [18.0, 26.0, '场景：像切桌面一样换一整组窗口', '⌃← ⌃→ 或四指左右滑，每块屏各切各的'],
+  [26.0, 37.0, '跨屏绑定', '笔记本切到「写代码」，大屏自动换成「看文档」'],
+  [37.0, 46.0, '随手窗口', '访达这类随开随关的，浮在上面，切场景也不藏'],
+  [46.0, 56.0, '说一句话，AI 帮你建一批场景', '结合窗口大小、屏幕放不放得下和你的使用习惯'],
+];
+const KEYS = [[10.3, 12.0, '双击', ['右 ⌘']], [19.0, 20.0, '', ['⌃', '→']], [20.2, 21.2, '再按', ['→']], [21.5, 22.5, '松开', ['⌃']], [30.6, 31.8, '笔记本上', ['⌃', '←']], [33.6, 34.8, '再切回来', ['⌃', '→']]];
+
+window.renderAt = function (t) {
+  // 片头
+  intro.style.opacity = 1 - seg(t, 3.4, 4.2);
+  intro.querySelector('img').style.transform = `scale(${.8 + .2 * back(seg(t, .1, 1.1))})`;
+  intro.querySelector('h1').style.opacity = seg(t, .5, 1.2);
+  intro.querySelector('p').style.opacity = seg(t, 1.1, 1.9);
+  outro.style.opacity = seg(t, 55.6, 56.4);
+
+  // 屏幕：单屏全幅 ↔ 双屏并排
+  const dual = ease(seg(t, 26.0, 27.2)) * (1 - ease(seg(t, 36.4, 37.4)));
+  const aR = { x: lerp(0, 90, dual), y: lerp(0, 250, dual), s: lerp(1, .42, dual) };
+  const bR = { x: 980, y: 190, s: .48 };
+  css(A, { transform: `translate(${aR.x}px,${aR.y}px) scale(${aR.s})`, borderRadius: dual * 30 + 'px', zIndex: 2 });
+  css(B, { transform: `translate(${bR.x + (1 - dual) * 300}px,${bR.y}px) scale(${bR.s})`, opacity: dual, borderRadius: '30px', zIndex: 2 });
+  const aw = W * aR.s, ah = H * aR.s, bw = W * bR.s, bh = H * bR.s;
+  css(bezA, { left: aR.x - 16 + 'px', top: aR.y - 16 + 'px', width: aw + 32 + 'px', height: ah + 32 + 'px', opacity: dual });
+  css(baseA, { left: aR.x - 70 + 'px', top: aR.y + ah + 16 + 'px', width: aw + 140 + 'px', height: '26px', opacity: dual });
+  css(bezB, { left: bR.x - 18 + 'px', top: bR.y - 18 + 'px', width: bw + 36 + 'px', height: bh + 36 + 'px', opacity: dual });
+  css(standB, { left: bR.x + bw / 2 - 40 + 'px', top: bR.y + bh + 18 + 'px', width: '80px', height: '90px', opacity: dual });
+  css(footB, { left: bR.x + bw / 2 - 150 + 'px', top: bR.y + bh + 104 + 'px', width: '300px', height: '16px', borderRadius: '8px', opacity: dual });
+  stage.style.background = `linear-gradient(160deg, rgba(43,32,82,${dual}), rgba(18,14,34,${dual}))`;
+
+  placeWins(A, TL_A, t);
+  placeWins(B, TL_B, t);
+
+  // 字幕
+  const cap = CAPS.find(c => t >= c[0] && t < c[1]);
+  caption.style.opacity = cap ? fade(t, cap[0], cap[1], .45) : 0;
+  if (cap) { caption.querySelector('.t').textContent = cap[2]; caption.querySelector('.s').textContent = cap[3]; }
+  if (t >= 46) caption.style.bottom = '30px';
+  // 按键
+  const k = KEYS.find(x => t >= x[0] && t < x[1]);
+  keys.style.opacity = k ? fade(t, k[0], k[1], .2) : 0;
+  if (k) keys.innerHTML = (k[2] ? `<span>${k[2]}</span>` : '') + k[3].map(x => `<span class="kc">${x}</span>`).join('');
+  keys.style.bottom = t > 26 && t < 37 ? '170px' : '190px';
+
+  // 版式盘
+  const pOn = fade(t, 11.0, 13.0, .3);
+  css(palette, { opacity: pOn, transform: `translate(-50%,-50%) scale(${.92 + .08 * back(seg(t, 11.0, 11.4))})` });
+  const sel = t < 11.6 ? 0 : t < 11.9 ? 1 : t < 12.2 ? 2 : 3;
+  palette.querySelectorAll('.lay').forEach((e, i) => e.classList.toggle('on', i === sel));
+  if (t > 12.5 && t < 12.7) palette.querySelector('.lay[data-i="3"]').style.transform = 'scale(.94)'; else palette.querySelector('.lay[data-i="3"]').style.transform = '';
+
+  // 场景卡片
+  const sOn = fade(t, 19.2, 22.6, .3);
+  css(strip, { opacity: sOn, transform: `translate(-50%,-50%) scale(${.94 + .06 * back(seg(t, 19.2, 19.6))})` });
+  const ssel = t < 20.4 ? 1 : 2;
+  const ss = t < 20.4 ? 1 : (t < 21.6 ? 2 : 1);
+  strip.querySelectorAll('.sc').forEach((e, i) => e.classList.toggle('on', i === (t < 19.8 ? 0 : t < 20.6 ? 1 : t < 21.3 ? 2 : 1)));
+
+  // 双屏：标签、绑定菜单、连线脉冲
+  const lab = (t < 31.6 || t >= 34.6) ? ['💬 回消息', '📅 日程'] : ['💻 写代码', '📖 看文档'];
+  labA.innerHTML = `<small>笔记本</small>${lab[0]}`; labB.innerHTML = `<small>扩展屏1</small>${lab[1]}`;
+  css(labA, { left: aR.x + aw / 2 + 'px', top: aR.y - 80 + 'px', opacity: dual });
+  css(labB, { left: bR.x + bw / 2 + 'px', top: bR.y - 82 + 'px', opacity: dual });
+  const lx = (aR.x + aw + bR.x) / 2, ly = aR.y + ah / 2;
+  const pulseP = Math.max(seg(t, 31.45, 31.95) * (t < 32.0 ? 1 : 0), seg(t, 34.45, 34.95) * (t > 34.4 && t < 35.0 ? 1 : 0));
+  css(link, { left: lx + 'px', top: ly + 'px', opacity: dual * seg(t, 28.6, 29.2), transform: `translate(-50%,-50%) scale(${1 + .25 * Math.sin(pulseP * Math.PI)})` });
+  css(pulse, { left: lerp(aR.x + aw * .6, bR.x + bw * .4, pulseP) + 'px', top: ly + 'px', opacity: pulseP > 0 && pulseP < 1 ? 1 : 0 });
+  const mOn = fade(t, 27.4, 30.2, .25);
+  css(menuBtn, { left: aR.x + aw - 400 + 'px', top: aR.y + ah - 70 + 'px', opacity: mOn });
+  css(menu, { left: aR.x + aw - 400 + 'px', top: aR.y + ah - 70 - 230 + 'px', opacity: fade(t, 27.9, 29.9, .2) });
+
+  // 放进哪一块 + 提示
+  css(chooser, { opacity: fade(t, 39.0, 41.5, .3), transform: `translateY(${-30 * (1 - easeOut(seg(t, 39.0, 39.4)))}px)` });
+  chooser.querySelector('.btn.hot').style.transform = t > 41.1 && t < 41.35 ? 'scale(.93)' : '';
+  css(toast, { opacity: fade(t, 41.6, 43.8, .3) });
+
+  // 场景工作台
+  const stOn = fade(t, 46.2, 55.7, .4);
+  dim.style.opacity = stOn;
+  css(studio, { opacity: stOn, transform: `scale(${.96 + .04 * easeOut(seg(t, 46.2, 46.7))})` });
+  const ask = document.getElementById('ask');
+  const n = Math.floor(REQ.length * seg(t, 47.8, 50.8));
+  ask.classList.toggle('focus', t > 47.6 && t < 51.6);
+  ask.querySelector('.tx').innerHTML = n ? REQ.slice(0, n) + (t < 51.6 && Math.floor(t * 3) % 2 ? '' : '<span class="caret"></span>') : '<span class="ph">想怎么分？可以不写</span>';
+  const busy = t > 51.5 && t < 52.6;
+  ask.querySelector('.send').innerHTML = busy ? '<div class="spin" style="transform:rotate(' + t * 720 + 'deg)"></div>' : '↑';
+  studio.querySelector('.main h3').textContent = t < 52.6 ? (busy ? 'AI 正在看你的窗口…' : '写一句你想怎么分（也可以不写）') : 'AI 建议的 6 个场景';
+  studio.querySelector('.main .sum').textContent = t < 52.6 ? (busy ? '看窗口大小、哪些经常一起用、笔记本和大屏各放得下几个' : 'AI 会看你现在开着的所有窗口，按你的意思和使用习惯建场景') : 'AI 助手做了单独和配聊天两个版本；两个浏览器窗口按内容分开；访达建议随手。';
+  studio.querySelectorAll('.pc').forEach((e, i) => { const q = easeOut(seg(t, 52.7 + i * .22, 53.1 + i * .22)); css(e, { opacity: q, transform: `translateY(${(1 - q) * 20}px)` }); });
+  studio.querySelector('.chips').style.opacity = seg(t, 54.2, 54.5);
+  studio.querySelector('.cta').style.opacity = seg(t, 54.4, 54.7);
+
+  // 鼠标
+  const cv = (t > 38.6 && t < 43.0) || (t > 47.0 && t < 53.6);
+  let ci = 0; while (ci + 1 < CUR.length && CUR[ci + 1][0] <= t) ci++;
+  const c0 = CUR[ci], c1 = CUR[Math.min(ci + 1, CUR.length - 1)];
+  const cp = c1[0] > c0[0] ? ease((t - c0[0]) / (c1[0] - c0[0])) : 0;
+  const cx = lerp(c0[1], c1[1], cp), cy = lerp(c0[2], c1[2], cp);
+  const clk = CLICKS.find(c => t >= c && t < c + .35);
+  css(cursor, { left: cx - 4 + 'px', top: cy - 4 + 'px', opacity: cv ? 1 : 0, transform: clk != null && t < clk + .15 ? 'scale(.85)' : '' });
+  css(ring, { left: cx + 'px', top: cy + 'px', opacity: clk != null ? 1 - seg(t, clk, clk + .35) : 0, transform: `translate(-50%,-50%) scale(${clk != null ? .5 + seg(t, clk, clk + .35) : 1})` });
+};
+
+window.DURATION = 62;
+const T0 = P.get('t');
+if (T0 != null) window.renderAt(+T0);
+else if (!P.has('render')) { const s = performance.now(); const loop = () => { window.renderAt(((performance.now() - s) / 1000) % window.DURATION); requestAnimationFrame(loop); }; loop(); }
+</script>
+</body>
+</html>
