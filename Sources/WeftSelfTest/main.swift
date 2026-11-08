@@ -62,7 +62,7 @@ func win(_ id: UInt32, _ app: String, _ bundle: String, _ title: String, _ f: CG
 func sampleWindows(_ p: DisplayProfile) -> [WindowInfo] {
     [
         win(11, "Google Chrome", "com.google.Chrome", "Pull requests · weft/weft - GitHub", CGRect(x: 1512, y: -375, width: 1280, height: 1415), p, z: 0),
-        win(12, "Google Chrome", "com.google.Chrome", "某公司 2026Q3 财报 - 财经网站", CGRect(x: 2792, y: -375, width: 1280, height: 1415), p, z: 3),
+        win(12, "Google Chrome", "com.google.Chrome", "澜起科技 2026Q3 财报 - 东方财富", CGRect(x: 2792, y: -375, width: 1280, height: 1415), p, z: 3),
         win(13, "Google Chrome", "com.google.Chrome", "Gmail - 收件箱", CGRect(x: 0, y: 33, width: 1512, height: 949), p, z: 5),
         win(21, "微信", "com.tencent.xinWeChat", "微信", CGRect(x: 100, y: 100, width: 900, height: 700), p, z: 1),
         win(31, "iTerm2", "com.googlecode.iterm2", "~/Mine/si/projects/weft — zsh", CGRect(x: 0, y: 33, width: 756, height: 949), p, z: 2),
@@ -94,7 +94,7 @@ check(FuzzyMatcher.rank(ws, query: "").map(\.id) == [11, 21, 31, 12, 41, 13], "�
 check(WindowMatcher.similarity("Pull requests · weft - GitHub", "Pull requests · weft - GitHub") == 1, "相同标题相似度 1")
 check(WindowMatcher.similarity("Issue #12 · weft - GitHub", "Issue #13 · weft - GitHub") > 0.8, "相近标题相似度高")
 let saved = [
-    SavedWindow(bundleID: "com.google.Chrome", appName: "Chrome", title: "某公司 2026Q3 财报 - 财经网站", displayUUID: "DELL", rel: .zero, isMinimized: false),
+    SavedWindow(bundleID: "com.google.Chrome", appName: "Chrome", title: "澜起科技 2026Q3 财报 - 东方财富", displayUUID: "DELL", rel: .zero, isMinimized: false),
     SavedWindow(bundleID: "com.google.Chrome", appName: "Chrome", title: "Pull requests · weft/weft - GitHub", displayUUID: "DELL", rel: .zero, isMinimized: false),
 ]
 let pairs = WindowMatcher.match(saved: saved, live: ws)
