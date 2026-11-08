@@ -39,7 +39,8 @@
 Requires macOS 14 (Sonoma) or later. Universal binary (Apple silicon + Intel).
 
 ```bash
-# Homebrew
+# Homebrew (newer versions ask you to trust third-party taps once; skip if `brew trust` doesn't exist)
+brew trust ahuili/tap
 brew install --cask ahuili/tap/weft
 
 # or the one-line installer

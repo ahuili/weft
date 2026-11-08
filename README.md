@@ -62,6 +62,7 @@
 ### 方式一：Homebrew（推荐）
 
 ```bash
+brew trust ahuili/tap    # 新版 Homebrew 要先信任第三方 tap（只需一次；旧版没有这个命令，跳过即可）
 brew install --cask ahuili/tap/weft
 ```
 
