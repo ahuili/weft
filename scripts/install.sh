@@ -1,8 +1,8 @@
 #!/bin/bash
 # 一行安装 Weft（下载 GitHub 上最新的发布版，装到 /Applications）：
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/weft/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ahuili/weft/main/scripts/install.sh | bash
 set -euo pipefail
-OWNER="${WEFT_OWNER:-OWNER}"
+OWNER="${WEFT_OWNER:-ahuili}"
 REPO="${WEFT_REPO:-weft}"
 DEST="${WEFT_DEST:-/Applications}"
 

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/weft/releases/latest"><img src="https://img.shields.io/github/v/release/OWNER/weft?label=%E4%B8%8B%E8%BD%BD&color=8b5cf6" alt="release"></a>
+  <a href="https://github.com/ahuili/weft/releases/latest"><img src="https://img.shields.io/github/v/release/ahuili/weft?label=%E4%B8%8B%E8%BD%BD&color=8b5cf6" alt="release"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-blue" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20%E8%8A%AF%E7%89%87%20%2B%20Intel-%E9%80%9A%E7%94%A8-555" alt="universal">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
@@ -22,7 +22,7 @@
 
 <p align="center">
   <img src="assets/demo.gif" width="860" alt="Weft 演示">
-  <br><sub>完整介绍视频（约 1 分钟）：<a href="https://github.com/OWNER/weft/releases/latest">Releases 页面</a></sub>
+  <br><sub>完整介绍视频（约 1 分钟）：<a href="https://github.com/ahuili/weft/releases/latest">Releases 页面</a></sub>
 </p>
 
 ---
@@ -62,7 +62,7 @@
 ### 方式一：Homebrew（推荐）
 
 ```bash
-brew install --cask OWNER/tap/weft
+brew install --cask ahuili/tap/weft
 ```
 
 以后升级：`brew upgrade --cask weft`
@@ -70,14 +70,14 @@ brew install --cask OWNER/tap/weft
 ### 方式二：一行脚本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/weft/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ahuili/weft/main/scripts/install.sh | bash
 ```
 
 下载最新发布版装到「应用程序」，并直接打开。
 
 ### 方式三：手动下载
 
-到 [Releases](https://github.com/OWNER/weft/releases/latest) 下载 `Weft-x.y.z.dmg`，把 Weft 拖进「应用程序」。
+到 [Releases](https://github.com/ahuili/weft/releases/latest) 下载 `Weft-x.y.z.dmg`，把 Weft 拖进「应用程序」。
 
 > Weft 还没有 Apple 公证，第一次打开时 macOS 可能提示「无法验证开发者」。任选一种解决：
 > - 在「应用程序」里**右键 Weft → 打开**，再点「打开」；或到 系统设置 › 隐私与安全性 底部点「仍要打开」。
@@ -88,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/weft/main/scripts/install.sh 
 ### 方式四：从源码构建
 
 ```bash
-git clone https://github.com/OWNER/weft.git && cd weft
+git clone https://github.com/ahuili/weft.git && cd weft
 ./scripts/build-app.sh --install        # 编译并装到 ~/Applications，然后打开
 ```
 

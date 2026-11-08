@@ -40,18 +40,18 @@ Requires macOS 14 (Sonoma) or later. Universal binary (Apple silicon + Intel).
 
 ```bash
 # Homebrew
-brew install --cask OWNER/tap/weft
+brew install --cask ahuili/tap/weft
 
 # or the one-line installer
-curl -fsSL https://raw.githubusercontent.com/OWNER/weft/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ahuili/weft/main/scripts/install.sh | bash
 ```
 
-Or download the DMG from [Releases](https://github.com/OWNER/weft/releases/latest). Weft is not notarized yet; if macOS refuses to open it, right-click the app → Open, or run `xattr -dr com.apple.quarantine /Applications/Weft.app`.
+Or download the DMG from [Releases](https://github.com/ahuili/weft/releases/latest). Weft is not notarized yet; if macOS refuses to open it, right-click the app → Open, or run `xattr -dr com.apple.quarantine /Applications/Weft.app`.
 
 Build from source (Command Line Tools are enough):
 
 ```bash
-git clone https://github.com/OWNER/weft.git && cd weft && ./scripts/build-app.sh --install
+git clone https://github.com/ahuili/weft.git && cd weft && ./scripts/build-app.sh --install
 ```
 
 Weft needs **Accessibility** (required) and **Screen Recording** (thumbnails only) permissions.
