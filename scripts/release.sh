@@ -59,6 +59,7 @@ gh release create v$VERSION $ZIP $DMG dist/SHA256SUMS-$VERSION.txt \
 # 更新 brew tap 里的 Casks/weft.rb
 TAP=$(mktemp -d)
 gh repo clone $GITHUB_OWNER/$TAP_REPO $TAP -- -q
+git -C $TAP config user.name "$(git config user.name)"; git -C $TAP config user.email "$(git config user.email)"
 mkdir -p $TAP/Casks && cp dist/weft.rb $TAP/Casks/weft.rb
 git -C $TAP add Casks/weft.rb
 git -C $TAP commit -q -m "weft $VERSION" && git -C $TAP push -q
