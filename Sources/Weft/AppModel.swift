@@ -452,7 +452,11 @@ final class AppModel: ObservableObject {
         guard !stageActive else { return }
         stage.enter(focused: system.focusedWindowID())
         beginStage()
-        Toast.show("🎭 舞台模式 · 切到哪个窗口它就上台 · 再按 \(settings.stageTrigger.display) 退出", seconds: 3.5)
+        if SystemWindowSettings.stageManagerOn {
+            Toast.show("⚠️ 系统的「台前调度」开着，会和 Weft 舞台抢窗口 · 建议在控制中心里关掉台前调度", seconds: 5)
+        } else {
+            Toast.show("🎭 舞台模式 · 切到哪个窗口它就上台 · 再按 \(settings.stageTrigger.display) 退出", seconds: 3.5)
+        }
     }
 
     func beginStage() {
@@ -580,8 +584,8 @@ final class AppModel: ObservableObject {
         guard let w = dragWin, let from = dragFrom, let f = system.frames(of: [w.id])[w.id] else { return }
         let moved = abs(f.minX - from.frame.minX) + abs(f.minY - from.frame.minY) > 30 && abs(f.width - from.frame.width) < 4
         let p = CGEvent(source: nil)?.location ?? f.center
-        // 按住 ⌥：叠到落点那一格上（同一块屏也行）
-        if moved, NSEvent.modifierFlags.contains(.option), let (u, i) = stage.slotHit(p), let top = stage.stage(for: u)?.slots[i], top != w.id,
+        // 按住 ⇧：叠到落点那一格上（同一块屏也行）。不用 ⌥：macOS 15 起按住 ⌥ 拖窗口是系统的「平铺」，两个预览会打架
+        if moved, NSEvent.modifierFlags.contains(.shift), let (u, i) = stage.slotHit(p), let top = stage.stage(for: u)?.slots[i], top != w.id,
            stage.canStack(display: u, slot: i), let base = stage.baseSlotFrames(u).dropFirst(i).first {
             // 叠上去以后它在最上面那层的位置
             let k = min((stage.stage(for: u)?.depth(i) ?? 0) + 1, DisplayStage.maxStack - 1)

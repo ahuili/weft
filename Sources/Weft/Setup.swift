@@ -590,8 +590,10 @@ struct StagePane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 260)
             }
             Text(model.settings.stageCurtain
-                 ? (model.settings.curtainLook == .glass ? "毛玻璃盖住桌面图标和壁纸，最干净。" : "看得到你的壁纸和桌面图标（图标点不到）。")
-                   + "两种都会接住对桌面的点击，防止误点桌面把窗口全推开。"
+                 ? (model.settings.curtainLook == .glass ? "毛玻璃盖住桌面图标和壁纸，最干净。会接住对桌面的点击，防止误点桌面把窗口全推开。"
+                    : SystemWindowSettings.clickWallpaperShowsDesktop
+                    ? "看得到壁纸和桌面图标，但图标点不到：为了防止「点按墙纸显示桌面」把窗口全推开。把 系统设置 › 桌面与程序坞 › 点按墙纸以显示桌面 改成「仅在台前调度中」，图标就能照常点、往桌面拖文件。"
+                    : "看得到壁纸，桌面图标照常能点、能往桌面拖文件。")
                  : "不盖：桌面原样。注意 macOS 的「点按墙纸显示桌面」可能会把窗口全推开（系统设置 › 桌面与程序坞 里可以改成「仅在台前调度中」）。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("⌃← / ⌃→ 和四指左右滑切换场景（像切系统桌面，带截图卡片）", isOn: bind(\.sceneSwipe))

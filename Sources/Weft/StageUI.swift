@@ -30,6 +30,8 @@ final class Curtain {
             p.backgroundColor = .clear
             p.hasShadow = false
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
+            // 透出壁纸、而且系统没开「点按墙纸显示桌面」：不用接住点击，桌面图标照常能点、能往桌面拖文件
+            p.ignoresMouseEvents = look == .wallpaper && !SystemWindowSettings.clickWallpaperShowsDesktop
             p.contentView = NSHostingView(rootView: CurtainView(hint: hint, look: look))
             p.setFrame(s.frame, display: true)
             p.alphaValue = 0
@@ -239,4 +241,13 @@ struct ShelfStagePanel: View {
         .padding(.horizontal, 7).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 7).fill(active && w != nil ? Color.purple.opacity(0.18) : Color.white.opacity(0.05)))
     }
+}
+
+/// 系统里和 Weft 舞台相关的几个开关（只读）
+enum SystemWindowSettings {
+    private static var wm: UserDefaults? { UserDefaults(suiteName: "com.apple.WindowManager") }
+    /// 系统的「台前调度」
+    static var stageManagerOn: Bool { wm?.bool(forKey: "GloballyEnabled") ?? false }
+    /// 「点按墙纸以显示桌面」：没设过 = 默认「始终」
+    static var clickWallpaperShowsDesktop: Bool { (wm?.object(forKey: "EnableStandardClickToShowDesktop") as? Bool) ?? true }
 }
