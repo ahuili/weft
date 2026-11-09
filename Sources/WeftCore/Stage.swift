@@ -120,19 +120,40 @@ public enum StageGeometry {
             if spec.mirrored && spec.layout != .triple { cols.reverse() }
             let avail = r.width - g * CGFloat(cols.count - 1)
             var widths = cols.map { avail * CGFloat($0.share) }
-            // 最小宽度：先满足有要求的列，剩下的按原比例分给其他列（每列至少留 280）
+            // 最小宽度：先满足有要求的列，剩下的按原比例分给其他列。
+            // 别的列至少留原宽度的一半（不低于 360）；还放不下 = 有的 App 就是不肯变窄：允许互相盖住一部分，
+            // 第一列靠左、最后一列靠右、中间的均匀错开，你点到哪个它就浮到最上面
             let need = cols.map { c in c.slots.compactMap { minWidths[$0] }.max() ?? 0 }
+            let floor = widths.map { max(360, $0 * 0.5) }
+            let want = widths.indices.map { need[$0] > 0 ? max(need[$0], widths[$0]) : floor[$0] }
+            if need.contains(where: { $0 > 0 }), want.reduce(0, +) > avail {
+                let ws = want.map { min($0, r.width) }
+                var out = [CGRect](repeating: .zero, count: spec.layout.slots)
+                let n = ws.count
+                for (i, c) in cols.enumerated() {
+                    // 左边缘从 r.minX 到「最后一列贴右边」之间均匀排开
+                    let span = r.width - ws[n - 1]
+                    var x = r.minX + (n > 1 ? span * CGFloat(i) / CGFloat(n - 1) : 0)
+                    x = min(max(r.minX, x), r.maxX - ws[i])
+                    let k = CGFloat(c.slots.count)
+                    let h = (r.height - g * (k - 1)) / k
+                    for (j, slot) in c.slots.enumerated() {
+                        out[slot] = round(CGRect(x: x, y: r.minY + CGFloat(j) * (h + g), width: ws[i], height: h))
+                    }
+                }
+                return out
+            }
             if need.contains(where: { $0 > 0 }) {
                 var fixed = Set<Int>()
                 for _ in 0..<cols.count {
                     var changed = false
                     for i in widths.indices where !fixed.contains(i) && need[i] > widths[i] {
-                        widths[i] = min(need[i], avail - 280 * CGFloat(cols.count - 1)); fixed.insert(i); changed = true
+                        widths[i] = need[i]; fixed.insert(i); changed = true
                     }
                     let rest = avail - fixed.reduce(0) { $0 + widths[$1] }
                     let free = widths.indices.filter { !fixed.contains($0) }
                     let base = free.reduce(0.0) { $0 + cols[$1].share }
-                    for i in free { widths[i] = max(280, rest * CGFloat(cols[i].share / max(base, 0.01))) }
+                    for i in free { widths[i] = max(floor[i], rest * CGFloat(cols[i].share / max(base, 0.01))) }
                     if !changed { break }
                 }
             }
@@ -446,6 +467,96 @@ public final class StageManager {
         layout(target)
         if focus { actions.focus(w.id) }
         if let o = displaced { hide(o); pushHistory(target, idx, o) }
+        return true
+    }
+
+    // MARK: 拖进来插入
+
+    /// 把一个窗口拖到某块屏上松手时会怎样：放进哪一格、版式变成什么、它会在哪
+    public struct InsertPlan: Equatable {
+        public let display: String
+        public let spec: StageSpec
+        public let slots: [UInt32?]
+        /// 这个窗口落下后的位置（画落点预览用）
+        public let frame: CGRect
+        /// 格子满了（四宫格）时被换下去的窗口
+        public let replaces: UInt32?
+    }
+
+    /// 从别处（另一块屏、浮着的窗口）拖到这块屏：有空格放空格；没有就版式长一格（专注→左右→一主两辅 / 三栏→四宫格），
+    /// 按你松手的位置插在那个窗口前面或后面；四宫格满了就换掉落点那一格。同一块屏里拖还是换位（不走这里）
+    public func planInsert(_ id: UInt32, display u: String, at p: CGPoint) -> InsertPlan? {
+        guard isActive, let st = stages[u], let d = actions.profile().display(uuid: u), !st.slots.contains(id) else { return nil }
+        let cur = frames(st, in: d.visible)
+        func reading(_ fr: [CGRect], _ idx: [Int]) -> [Int] {
+            idx.sorted { a, b in abs(fr[a].midX - fr[b].midX) > 40 ? fr[a].midX < fr[b].midX : fr[a].midY < fr[b].midY }
+        }
+        func plan(_ spec: StageSpec, _ slots: [UInt32?], replaces: UInt32? = nil) -> InsertPlan? {
+            let ds = DisplayStage(spec: spec, slots: slots)
+            guard let j = ds.slots.firstIndex(of: id) else { return nil }
+            let fr = frames(ds, in: d.visible)
+            return InsertPlan(display: u, spec: spec, slots: ds.slots, frame: fr[j], replaces: replaces)
+        }
+        // 1. 有空格：落点那一格空着就放那儿，不然放第一个空格
+        let empties = st.emptySlots.filter { cur.indices.contains($0) }
+        if let j = empties.first(where: { cur[$0].contains(p) }) ?? empties.first {
+            var s = st.slots; s[j] = id
+            return plan(st.spec, s)
+        }
+        let filled = st.slots.indices.filter { st.slots[$0] != nil && $0 < cur.count }
+        let wide = d.visible.width >= 2000
+        let next: StageSpec?
+        switch filled.count {
+        case 0, 1: next = StageSpec(.split, ratio: 0.5)
+        case 2: next = wide ? StageSpec(.triple, ratio: 0.34) : StageSpec(.mainStack, ratio: 0.62, mirrored: st.spec.mirrored)
+        case 3: next = StageSpec(.quad)
+        default: next = nil
+        }
+        // 2. 满了：换掉落点那一格（锁着的不换）
+        guard let ns = next else {
+            guard let j = cur.indices.first(where: { cur[$0].contains(p) }), !st.locked.contains(j) else { return nil }
+            var s = st.slots; let old = s[j]; s[j] = id
+            return plan(st.spec, s, replaces: old)
+        }
+        // 3. 长一格：现有窗口按从左到右、从上到下的顺序，新窗口插在落点那个窗口的前面（落在它左半边/上半边）或后面
+        var list = reading(cur, filled).map { st.slots[$0]! }
+        var k = p.x < d.visible.midX ? 0 : list.count
+        if let hit = filled.first(where: { cur[$0].contains(p) }), let pos = list.firstIndex(of: st.slots[hit]!) {
+            let f = cur[hit]
+            // 它上下还叠着别的窗口（一主两辅的右栏、四宫格）：按上下半边算；否则按左右半边
+            let stacked = filled.contains { $0 != hit && abs(cur[$0].midX - f.midX) < 40 }
+            let before = stacked ? p.y < f.midY : p.x < f.midX
+            k = before ? pos : pos + 1
+        }
+        list.insert(id, at: k)
+        let nf = StageGeometry.frames(ns, in: d.visible, gap: gap)
+        var s = [UInt32?](repeating: nil, count: ns.layout.slots)
+        for (pos, slot) in reading(nf, Array(nf.indices)).enumerated() where pos < list.count { s[slot] = list[pos] }
+        return plan(ns, s)
+    }
+
+    /// 按 planInsert 的结果真的放进去
+    @discardableResult
+    public func insert(_ w: WindowInfo, plan pl: InsertPlan) -> Bool {
+        guard isActive, stages[pl.display] != nil else { return false }
+        touch(); snapshot()
+        companions.remove(w.id)
+        if let (u, i) = locate(w.id), u != pl.display {
+            stages[u]!.slots[i] = nil
+            layout(u); onRelayout(u)
+        }
+        bringBack(w)
+        let old = stages[pl.display]!
+        var st = DisplayStage(spec: pl.spec, slots: pl.slots, locked: pl.spec == old.spec ? old.locked : [])
+        st.active = st.slots.firstIndex(of: w.id) ?? 0
+        stages[pl.display] = st
+        home[w.id] = pl.display
+        focusedDisplay = pl.display
+        layout(pl.display)
+        actions.focus(w.id)
+        if let o = pl.replaces { hide(o); pushHistory(pl.display, st.active, o) }
+        log("拖进来插入：\(w.appName) → \(pl.spec.layout) 第 \(st.active) 格")
+        onRelayout(pl.display)
         return true
     }
 
@@ -765,6 +876,11 @@ public final class StageManager {
             var hit: (String, Int)?
             for dd in prof.displays where stages[dd.uuid] != nil {
                 for (j, g) in slotFrames(dd.uuid).enumerated() where g.contains(f.center) && !(dd.uuid == u && j == i) { hit = (dd.uuid, j) }
+            }
+            // 拖到另一块屏的舞台上：插进去（那块屏版式长一格），不是互换
+            if let (to, _) = hit, to != u, let w = actions.windows().first(where: { $0.id == id }),
+               let pl = planInsert(id, display: to, at: f.center) {
+                return insert(w, plan: pl)
             }
             if let (to, j) = hit, stages[to]?.locked.contains(j) != true {
                 touch(); snapshot()

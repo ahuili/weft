@@ -574,7 +574,26 @@ struct StagePane: View {
             Text("开启后每块屏幕只留 1~3 个窗口。用 ⌥Tab、侧栏、⌘Tab 或点 Dock 切到别的窗口，它就替换当前位置；◧ ◨ 可以直接放主位 / 副位。退出时后台窗口全部回到原位。")
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("切到的窗口自动上台（⌘Tab、点 Dock、点通知也算）", isOn: bind(\.stageAutoPromote))
-            Toggle("用毛玻璃盖住桌面（更干净，也防止误点桌面把窗口推开）", isOn: bind(\.stageCurtain))
+            HStack {
+                Text("桌面")
+                Picker("", selection: Binding(
+                    get: { model.settings.stageCurtain ? (model.settings.curtainLook == .glass ? 0 : 1) : 2 },
+                    set: { v in
+                        model.settings.stageCurtain = v != 2
+                        if v != 2 { model.settings.curtainLook = v == 0 ? .glass : .wallpaper }
+                        model.saveSettings()
+                    })) {
+                    Text("毛玻璃").tag(0)
+                    Text("透出壁纸").tag(1)
+                    Text("不盖").tag(2)
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            }
+            Text(model.settings.stageCurtain
+                 ? (model.settings.curtainLook == .glass ? "毛玻璃盖住桌面图标和壁纸，最干净。" : "看得到你的壁纸和桌面图标（图标点不到）。")
+                   + "两种都会接住对桌面的点击，防止误点桌面把窗口全推开。"
+                 : "不盖：桌面原样。注意 macOS 的「点按墙纸显示桌面」可能会把窗口全推开（系统设置 › 桌面与程序坞 里可以改成「仅在台前调度中」）。")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("⌃← / ⌃→ 和四指左右滑切换场景（像切系统桌面，带截图卡片）", isOn: bind(\.sceneSwipe))
             Text("舞台模式下 Weft 接管这两个手势；没开舞台时还是系统的切桌面。系统的四指滑会同时轻弹一下，不想看到可以在 系统设置 › 触控板 › 更多手势 里把「在全屏幕应用程序之间轻扫」改成三指或关掉。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

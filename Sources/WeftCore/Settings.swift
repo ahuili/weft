@@ -73,6 +73,9 @@ public enum Trigger: Codable, Equatable {
 
 public enum ShelfEdge: String, Codable, CaseIterable { case left, right, off }
 
+/// 舞台模式时桌面怎么盖：毛玻璃（干净）/ 透出壁纸（好看）。两种都会挡住对桌面的点击，防止「点按墙纸显示桌面」把窗口推开
+public enum CurtainLook: String, Codable, CaseIterable { case glass, wallpaper }
+
 /// 用户偏好。存 settings.json；新增字段都有默认值，旧文件可直接读。
 /// 数字槽位用哪个修饰键：修饰键+数字 = 跳到那个窗口，修饰键+⇧+数字 = 把当前窗口钉到那里
 public enum SlotModifier: String, Codable, CaseIterable {
@@ -126,6 +129,8 @@ public struct WeftSettings: Codable, Equatable {
     public var stageGap: Double = 10
     /// 舞台模式时用毛玻璃盖住桌面图标
     public var stageCurtain = true
+    /// 幕布的样子
+    public var curtainLook: CurtainLook = .glass
     /// 舞台模式下，你用 ⌘Tab / 点 Dock 切到的窗口自动上台
     public var stageAutoPromote = true
     /// 数字槽位的修饰键
@@ -138,7 +143,7 @@ public struct WeftSettings: Codable, Equatable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case setupDone, hubTrigger, quickSwitch, stageTrigger, shelfEdge, shelfTrigger, sceneTrigger, shelfDelay, stageGap, stageCurtain, stageAutoPromote, slotModifier, sceneSwipe, floatingApps
+        case setupDone, hubTrigger, quickSwitch, stageTrigger, shelfEdge, shelfTrigger, sceneTrigger, shelfDelay, stageGap, stageCurtain, curtainLook, stageAutoPromote, slotModifier, sceneSwipe, floatingApps
     }
 
     public init(from decoder: Decoder) throws {
@@ -159,6 +164,7 @@ public struct WeftSettings: Codable, Equatable {
         shelfDelay = (try? c.decode(Double.self, forKey: .shelfDelay)) ?? d.shelfDelay
         stageGap = (try? c.decode(Double.self, forKey: .stageGap)) ?? d.stageGap
         stageCurtain = (try? c.decode(Bool.self, forKey: .stageCurtain)) ?? d.stageCurtain
+        curtainLook = (try? c.decode(CurtainLook.self, forKey: .curtainLook)) ?? d.curtainLook
         stageAutoPromote = (try? c.decode(Bool.self, forKey: .stageAutoPromote)) ?? d.stageAutoPromote
         slotModifier = (try? c.decode(SlotModifier.self, forKey: .slotModifier)) ?? d.slotModifier
         sceneSwipe = (try? c.decode(Bool.self, forKey: .sceneSwipe)) ?? d.sceneSwipe

@@ -8,11 +8,20 @@ import WeftCore
 final class Curtain {
     private var panels: [NSPanel] = []
     var hint = ""
+    var look: CurtainLook = .glass
+    private var shownLook: CurtainLook?
 
     var isShown: Bool { !panels.isEmpty }
 
+    /// 设置里换了样子：开着的话原地换
+    func restyle(_ l: CurtainLook) {
+        look = l
+        if isShown && shownLook != l { show() }
+    }
+
     func show() {
         hide(animated: false)
+        shownLook = look
         let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         for s in NSScreen.screens {
             let p = NSPanel(contentRect: s.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -21,7 +30,7 @@ final class Curtain {
             p.backgroundColor = .clear
             p.hasShadow = false
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
-            p.contentView = NSHostingView(rootView: CurtainView(hint: hint))
+            p.contentView = NSHostingView(rootView: CurtainView(hint: hint, look: look))
             p.setFrame(s.frame, display: true)
             p.alphaValue = 0
             p.orderFrontRegardless()
@@ -42,11 +51,20 @@ final class Curtain {
 
 struct CurtainView: View {
     let hint: String
+    var look: CurtainLook = .glass
     var body: some View {
         ZStack(alignment: .bottom) {
-            Glass(material: .underWindowBackground)
-            LinearGradient(colors: [.black.opacity(0.25), .purple.opacity(0.10), .black.opacity(0.35)], startPoint: .top, endPoint: .bottom)
-            Text(hint).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.35)).padding(.bottom, 26)
+            switch look {
+            case .glass:
+                Glass(material: .underWindowBackground)
+                LinearGradient(colors: [.black.opacity(0.25), .purple.opacity(0.10), .black.opacity(0.35)], startPoint: .top, endPoint: .bottom)
+            case .wallpaper:
+                // 透出壁纸：几乎透明（要能接住点击），只在底部压一点暗让提示看得清；桌面图标也看得见，但点不到
+                Color.white.opacity(0.001)
+                LinearGradient(colors: [.clear, .clear, .black.opacity(0.18)], startPoint: .top, endPoint: .bottom)
+            }
+            Text(hint).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(look == .glass ? 0.35 : 0.55))
+                .shadow(color: .black.opacity(look == .glass ? 0 : 0.5), radius: 3).padding(.bottom, 26)
         }
         .ignoresSafeArea()
     }

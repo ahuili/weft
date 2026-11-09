@@ -301,7 +301,7 @@ stage5.pinnedDisplay = "DELL"
 stage5.present(fake5.wins.first { $0.id == 13 }!, on: stage5.currentDisplay())
 check(stage5.stages["DELL"]?.slots.contains(13) == true && stage5.homeDisplay(13) == "DELL", "在外接屏的面板里明确「放到这里」：搬过去并以后住在外接屏")
 stage5.pinnedDisplay = nil
-// 用户把笔记本上的飞书拖进外接屏的左格子：两个窗口换位
+// 用户把笔记本上的飞书拖进外接屏的左格子：插进去（外接屏版式长一格），原来的窗口都还在
 stage5.promoteDelay = 0
 let dellLeft = stage5.slotFrames("DELL")[0]
 let leftWas = stage5.stages["DELL"]!.slots[0]!
@@ -310,9 +310,46 @@ fake5.wins[w41].frame = CGRect(x: dellLeft.midX - 450, y: dellLeft.midY - 350, w
 fake5.wins[w41].displayUUID = "DELL"
 stage5.settleDelay = 0
 stage5.settle(released: true)
-check(stage5.stages["DELL"]?.slots[0] == 41 && stage5.stages["LAPTOP"]?.slots.contains(leftWas) == true && stage5.homeDisplay(41) == "DELL",
-      "拖进别的格子：两个窗口换位 \(stage5.stages)")
-check(fake5.wins[w41].frame == stage5.slotFrames("DELL")[0], "拖过去的窗口贴合格子")
+let dellAfter = stage5.stages["DELL"]!
+check(dellAfter.slots.contains(41) && dellAfter.slots.contains(leftWas) && dellAfter.windows.count == 3 && dellAfter.spec.layout == .triple
+      && stage5.stages["LAPTOP"]?.slots.contains(41) == false && stage5.homeDisplay(41) == "DELL",
+      "跨屏拖进舞台：插进去、宽屏两格长成三栏，原来的窗口都还在 \(stage5.stages)")
+check(fake5.wins[w41].frame == stage5.slotFrames("DELL")[dellAfter.slots.firstIndex(of: 41)!], "拖过去的窗口贴合格子")
+
+// 插入规划：笔记本这种窄屏两格 → 一主两辅；落在左窗口的左半边 = 插在最前面
+do {
+    let f7 = FakeWindows(sampleWindows(solo), solo)
+    let sm7 = StashManager(actions: f7, store: Store(dir: tmp.appendingPathComponent("stage7insert")))
+    let st7 = StageManager(actions: f7, stash: sm7); st7.verifyDelay = 0; st7.promoteDelay = 0
+    st7.enter(focused: 11)
+    let u = st7.stages.keys.first!
+    st7.setSpec(StageSpec(.split), display: u, fill: f7.wins.filter { $0.id == 12 })
+    let fr = st7.slotFrames(u)
+    let a = st7.stages[u]!.slots[0]!, b = st7.stages[u]!.slots[1]!
+    let pl = st7.planInsert(13, display: u, at: CGPoint(x: fr[0].minX + 20, y: fr[0].midY))
+    check(pl?.spec.layout == .mainStack && pl?.slots[0] == 13 && pl?.slots.contains(a) == true && pl?.slots.contains(b) == true && pl?.replaces == nil,
+          "两格时拖进第三个：窄屏长成一主两辅，落在最左 = 新窗口做主位 \(String(describing: pl))")
+    let pr = st7.planInsert(13, display: u, at: CGPoint(x: fr[1].maxX - 20, y: fr[1].midY))
+    check(pr.map { DisplayStage(spec: $0.spec, slots: $0.slots).windows.count } == 3 && pr?.slots[0] == a, "落在最右：原来的主位不变")
+    check(st7.planInsert(a, display: u, at: fr[1].center) == nil, "同一块屏里拖：不算插入（还是换位）")
+    st7.setSpec(StageSpec(.quad), display: u, fill: f7.wins.filter { [12, 14, 15].contains($0.id) })
+    if st7.stages[u]!.emptySlots.isEmpty {
+        let q = st7.slotFrames(u)
+        let old = st7.stages[u]!.slots[3]
+        let full = st7.planInsert(13, display: u, at: q[3].center)
+        check(full?.spec.layout == .quad && full?.slots[3] == 13 && full?.replaces == old, "四宫格满了：换掉落点那一格")
+    }
+}
+
+// 放不下：两个都不肯变窄的窗口允许互相盖住一部分（左边那个靠左、右边那个靠右）
+do {
+    let rect = CGRect(x: 0, y: 0, width: 1500, height: 900)
+    let fr = StageGeometry.frames(StageSpec(.split), in: rect, gap: 10, minWidths: [0: 1000, 1: 900])
+    check(fr[0].minX == 10 && fr[0].width == 1000 && fr[1].maxX == 1490 && fr[1].width == 900 && fr[0].maxX > fr[1].minX,
+          "两个窗口加起来太宽：允许重叠，各自贴边 \(fr)")
+    let ok = StageGeometry.frames(StageSpec(.split), in: rect, gap: 10, minWidths: [0: 800])
+    check(ok[0].width == 800 && ok[0].maxX < ok[1].minX, "放得下：照旧并排，不重叠 \(ok)")
+}
 
 // App 自己把后台窗口拉回屏幕（App Store 这类）：对账时再藏一次，屡藏屡回就最小化
 do {

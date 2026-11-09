@@ -411,7 +411,47 @@ final class StageDeck {
         return NSRect(x: r.minX, y: h - r.maxY, width: r.width, height: r.height)
     }
 
+    // MARK: 拖进来：落点预览
+
+    private var dropPanel: NSPanel?
+    let dropState = DropState()
+
+    /// 拖着窗口过屏时，在它松手会落下的位置画一个框
+    func showDropPreview(_ f: CGRect, label: String) {
+        let r = nsRect(f).insetBy(dx: 2, dy: 2)
+        dropState.label = label
+        if dropPanel == nil {
+            let p = NSPanel(contentRect: r, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.level = .floating
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.ignoresMouseEvents = true
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+            p.contentView = NSHostingView(rootView: DropPreviewView(state: dropState))
+            p.alphaValue = 0
+            dropPanel = p
+        }
+        guard let p = dropPanel else { return }
+        if p.frame != r {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = p.alphaValue == 0 ? 0 : 0.15
+                p.animator().setFrame(r, display: true)
+            }
+        }
+        if p.alphaValue < 1 {
+            p.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
+        }
+    }
+
+    func hideDropPreview() {
+        guard let p = dropPanel, p.alphaValue > 0 else { return }
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) { p.orderOut(nil) }
+    }
+
     func hideAll() {
+        hideDropPreview()
         hideLayoutPicker()
         closePicker()
         endWheel()
@@ -647,5 +687,24 @@ struct WheelHUD: View {
         .background(Capsule().fill(.ultraThinMaterial))
         .overlay(Capsule().strokeBorder(Color.purple.opacity(0.5)))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@MainActor
+final class DropState: ObservableObject {
+    @Published var label = ""
+}
+
+/// 落点预览：半透明的紫色框 + 一行字
+struct DropPreviewView: View {
+    @ObservedObject var state: DropState
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14).fill(Color.purple.opacity(0.18))
+            RoundedRectangle(cornerRadius: 14).strokeBorder(Color.purple.opacity(0.85), style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+            Text(state.label).font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(Capsule().fill(Color.purple.opacity(0.85)))
+        }
     }
 }

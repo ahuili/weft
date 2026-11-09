@@ -484,6 +484,11 @@ final class AppModel: ObservableObject {
                 let down = CGEventSource.buttonState(.combinedSessionState, button: .left)
                 if down { self.lastMouseDown = Date() }
                 let busy = down || Date().timeIntervalSince(self.lastMouseDown) < 2
+                // 拖窗口过屏：画落点预览，松手插进去（要在磁吸之前处理，不然会被当成「拖进别的格子换位」）
+                if down && !self.wasDown { self.dragBegan() }
+                if down { self.dragMoved() }
+                if !down && self.wasDown { self.dragEnded() }
+                self.wasDown = down
                 if busy || n % 3 == 0 { self.checkStageFocus() }
                 if (busy || n % 4 == 0) && self.stage.settle() { self.stageChanged(); self.syncScenes() }
                 // 全量对账要逐个问所有窗口，比较贵：有动静时约 2 秒一次，空闲时约 4 秒一次，焦点变化后立刻补一次
@@ -517,6 +522,62 @@ final class AppModel: ObservableObject {
 
     private var activationObserver: NSObjectProtocol?
     private var lastMouseDown = Date.distantPast
+    private var wasDown = false
+
+    // MARK: 拖进来插入
+    //
+    // 从另一块屏（或浮着的窗口）拖到某块屏上：那块屏的版式长一格把它插进去，拖动中显示落点。
+    // 同一块屏里拖还是换位，随手 App 不管。
+
+    var onDropPreview: (CGRect?, String) -> Void = { _, _ in }
+    private var dragWin: WindowInfo?
+    private var dragFrom: (frame: CGRect, display: String?)?
+    private var dragPlan: StageManager.InsertPlan?
+
+    private func dragBegan() {
+        dragPlan = nil
+        guard let w = system.focusedWindow(), !settings.floatingApps.contains(w.bundleID) else { dragWin = nil; return }
+        dragWin = w
+        dragFrom = (w.frame, profile.display(containing: w.frame.center)?.uuid)
+        // 拖动期间预览要跟手：单独开一个快的计时器，松手就停（平时不花这份 CPU）
+        dragTimer?.invalidate()
+        let t = Timer(timeInterval: 0.06, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self, self.dragWin != nil, CGEventSource.buttonState(.combinedSessionState, button: .left) else { t.invalidate(); return }
+                self.dragMoved()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        dragTimer = t
+    }
+    private var dragTimer: Timer?
+
+    private func dragMoved() {
+        guard let w = dragWin, let from = dragFrom, let f = system.frames(of: [w.id])[w.id] else { return }
+        let moved = abs(f.minX - from.frame.minX) + abs(f.minY - from.frame.minY) > 30 && abs(f.width - from.frame.width) < 4
+        let p = CGEvent(source: nil)?.location ?? f.center
+        let u = profile.display(containing: p)?.uuid
+        guard moved, let u, u != from.display, let plan = stage.planInsert(w.id, display: u, at: p) else {
+            if dragPlan != nil { dragPlan = nil; onDropPreview(nil, "") }
+            return
+        }
+        if plan != dragPlan {
+            dragPlan = plan
+            let n = plan.slots.compactMap { $0 }.count
+            let label = plan.replaces != nil ? "换掉这一格" : (n > (stage.stage(for: u)?.windows.count ?? 0) ? "插到这里 · \(plan.spec.layout.title)" : "放这里")
+            onDropPreview(plan.frame, label)
+        }
+    }
+
+    private func dragEnded() {
+        defer { dragWin = nil; dragFrom = nil; dragPlan = nil; dragTimer?.invalidate(); dragTimer = nil }
+        guard let w = dragWin, dragPlan != nil else { return }
+        onDropPreview(nil, "")
+        // 按松手那一刻的位置重新算一次
+        let p = CGEvent(source: nil)?.location ?? .zero
+        guard let u = profile.display(containing: p)?.uuid, let plan = stage.planInsert(w.id, display: u, at: p) else { return }
+        if stage.insert(w, plan: plan) { stageChanged(); syncScenes() }
+    }
     private var reconcileSoon = false
     private var lastStuckCheck = Date.distantPast
 

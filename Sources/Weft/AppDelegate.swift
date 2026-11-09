@@ -38,7 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         model.start()
-        model.onSettingsChanged = { [weak self] in self?.bindTriggers(); self?.shelf.rebuildTriggers() }
+        model.onSettingsChanged = { [weak self] in
+            guard let self else { return }
+            self.bindTriggers(); self.shelf.rebuildTriggers()
+            // 幕布：开关、样子在设置里一改就生效
+            if self.model.stageActive {
+                if self.model.settings.stageCurtain != self.curtain.isShown { self.stageChanged(true) }
+                else { self.curtain.restyle(self.model.settings.curtainLook) }
+            }
+        }
         model.onStageChanged = { [weak self] on in self?.stageChanged(on) }
         model.onPickSlot = { [weak self] u, slot in
             guard let self else { return }
@@ -47,6 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.deck.showPicker(display: u, slot: slot) }
         }
         model.onStageRevision = { [weak self] in self?.deck.refreshPlaceholders() }
+        model.onDropPreview = { [weak self] f, label in
+            if let f { self?.deck.showDropPreview(f, label: label) } else { self?.deck.hideDropPreview() }
+        }
         model.onOfferPlacement = { [weak self] o in self?.chooser.show(o) }
         model.onHideHub = { [weak self] in self?.hub.hide(); self?.shelf.hide() }
         deck.onExit = { [weak self] in self?.model.exitStage() }
@@ -121,9 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         sceneKeys.enabled = on
         sceneKeys.log = { [weak self] m in self?.model.stageLog.append(AppModel.clock.string(from: Date()) + " " + m) }
-        // 键盘：换你正在用的那块屏（键盘焦点所在的）
-        sceneKeys.onOpen = { [weak self] in self?.scenes.peek(0, display: self?.model.stage.focusedDisplay) }
-        sceneKeys.onStep = { [weak self] d in self?.scenes.peek(d, display: self?.model.stage.focusedDisplay) }
+        // 键盘和触控板一样：换鼠标所在的那块屏（以前跟键盘焦点走，焦点常停在笔记本上，想换扩展屏还得再按 Tab）
+        sceneKeys.onOpen = { [weak self] in self?.scenes.peek(0, display: nil) }
+        sceneKeys.onStep = { [weak self] d in self?.scenes.peek(d, display: nil) }
         sceneKeys.onTab = { [weak self] in self?.scenes.peekNextDisplay() }
         sceneKeys.onCommit = { [weak self] in self?.scenes.commitPeek() }
         sceneKeys.onCancel = { [weak self] in self?.scenes.cancelPeek() }
@@ -188,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if on { deck.installWheel() } else { deck.hideAll() }
         deck.refreshPlaceholders()
         if on && model.settings.stageCurtain {
+            curtain.look = model.settings.curtainLook
             curtain.hint = "舞台模式 · 鼠标碰\(model.settings.shelfEdge == .right ? "右" : "左")边缘看后台 · \(model.settings.stageTrigger.display) 退出"
             curtain.show()
         } else {
