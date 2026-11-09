@@ -8,7 +8,7 @@ import WeftCore
 // 1. 版式盘：按舞台快捷键，屏幕中间浮出 6 种版式，数字键直接选；再按一次快捷键退出舞台。
 // 2. 选窗口：空格子里直接浮出候选窗口（缩略图），点一下或按数字就填进去；打字能搜（支持拼音）。
 // 3. 空格子占位：没放窗口的格子里有个淡淡的「＋」，点它就弹候选。
-// 4. 转轮：鼠标停在某个格子上，按住 ⌥ 滚动滚轮，这个格子里的窗口原地轮换，松开 ⌥ 就定下来。
+// 4. 转轮：鼠标停在某个窗口的标题栏上（空格子整格都行），按住 ⌥ 滚动滚轮，这个格子里的窗口原地轮换，松开 ⌥ 就定下来。
 // 5. 锁格：锁住的格子不会被 ⌘Tab 切来的窗口换掉。
 
 @MainActor
@@ -285,6 +285,9 @@ final class StageDeck {
             if wheel != nil && !e.flags.contains(.maskAlternate) { endWheel() }
             return false
         }
+        if type == .scrollWheel, ProcessInfo.processInfo.environment["WEFT_WHEEL_DEBUG"] != nil || debugWheelLog {
+            model.stageLog.append("滚动事件 flags=\(e.flags.rawValue) at=\(Int(e.location.x)),\(Int(e.location.y))")
+        }
         guard type == .scrollWheel, model.stageActive else { return false }
         let f = e.flags
         guard f.contains(.maskAlternate), !f.contains(.maskCommand), !f.contains(.maskControl), !f.contains(.maskShift) else {
@@ -293,7 +296,9 @@ final class StageDeck {
         }
         let p = e.location
         if wheel == nil {
-            guard let (u, j) = slotAt(p) else { return false }
+            // 只在窗口顶上那一条（标题栏、叠放露出的边）上接管：窗口里面的 ⌥+滚动还给 App（VS Code 快速滚动、Photoshop 缩放…）
+            guard let (u, j) = slotAt(p, titleBarOnly: true) else { return false }
+            model.stageLog.append(AppModel.clock.string(from: Date()) + " 转轮：⌥+滚动在格子 \(j) 的顶上")
             guard beginWheel(u, j) else { return true }
         }
         // 触控板（连续）按像素累计；鼠标滚轮按格
@@ -351,6 +356,12 @@ final class StageDeck {
         if !hold { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.endWheel() } }
     }
     func debugEndWheel() { endWheel() }
+    var debugWheelLog = false
+    func debugSlotAt(_ p: CGPoint) -> String {
+        let a = slotAt(p).map { "\($0.0.prefix(4))#\($0.1)" } ?? "-"
+        let b = slotAt(p, titleBarOnly: true).map { "\($0.0.prefix(4))#\($0.1)" } ?? "-"
+        return "any=\(a) titleBar=\(b) tap=\(tap != nil && CGEvent.tapIsEnabled(tap: tap!))"
+    }
 
     func debugType(_ s: String) {
         guard isPickerVisible else { return }
@@ -362,10 +373,20 @@ final class StageDeck {
         reloadCandidates()
     }
 
-    private func slotAt(_ p: CGPoint) -> (String, Int)? {
+    /// 标题栏那一条有多高（从这一格最上面那个窗口的顶边往下）
+    static let titleBarZone: CGFloat = 40
+
+    private func slotAt(_ p: CGPoint, titleBarOnly: Bool = false) -> (String, Int)? {
         for d in model.system.profile().displays where d.frame.contains(p) {
             guard model.stage.stage(for: d.uuid) != nil else { return nil }
-            for (j, f) in model.stage.baseSlotFrames(d.uuid).enumerated() where f.contains(p) { return (d.uuid, j) }
+            let tops = model.stage.slotFrames(d.uuid)
+            for (j, f) in model.stage.baseSlotFrames(d.uuid).enumerated() where f.contains(p) {
+                // 叠放时：从整摞的顶边到最上面那个窗口的标题栏，都算（露出来的边在这里面）
+                // 空格子上没有 App，整格都算
+                let empty = model.stage.stage(for: d.uuid)?.slots.dropFirst(j).first.flatMap { $0 } == nil
+                if titleBarOnly, !empty, j < tops.count, p.y > tops[j].minY + Self.titleBarZone { return nil }
+                return (d.uuid, j)
+            }
         }
         return nil
     }

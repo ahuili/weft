@@ -268,6 +268,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 deck.debugWheel(display: ds[di].uuid, slot: slot, steps: n, hold: true)
             }
         case "wheelend": deck.debugEndWheel()
+        case "wheellog": deck.debugWheelLog.toggle()
+        case "optscroll":
+            // optscroll <x> <y> <格数>：模拟一次真实的 ⌥ + 滚轮（CG 坐标），0.6 秒后松开 ⌥
+            if a.count > 3, let x = Double(a[1]), let y = Double(a[2]), let n = Int32(a[3]) {
+                let src = CGEventSource(stateID: .hidSystemState)
+                let p = CGPoint(x: x, y: y)
+                CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    if let e = CGEvent(scrollWheelEvent2Source: src, units: .line, wheelCount: 1, wheel1: -n, wheel2: 0, wheel3: 0) {
+                        e.flags = .maskAlternate; e.location = p; e.post(tap: .cghidEventTap)
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+                    if let up = CGEvent(keyboardEventSource: src, virtualKey: 58, keyDown: false) { up.type = .flagsChanged; up.flags = []; up.post(tap: .cghidEventTap) }
+                }
+            }
+        case "slotat":
+            // slotat <x> <y> <out>：这个点算不算某一格 / 某一格的标题栏
+            if a.count > 3, let x = Double(a[1]), let y = Double(a[2]) { try? deck.debugSlotAt(CGPoint(x: x, y: y)).write(toFile: a[3], atomically: true, encoding: .utf8) }
         case "wheel":
             // wheel <屏幕序号> <格子> <步数>：和 ⌥ 滚轮是同一个函数
             if a.count > 3, let di = Int(a[1]), ds.indices.contains(di), let slot = Int(a[2]), let n = Int(a[3]) {
