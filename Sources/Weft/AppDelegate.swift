@@ -256,6 +256,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "pickkey":
             // pickkey <字符>：模拟在候选面板里按键（调试用）
             if a.count > 1 { deck.debugType(a[1]) }
+        case "stack":
+            // stack <屏幕序号> <格子> <窗口ID>：和拖动时按住 ⌥ 松手是同一个函数
+            if a.count > 3, let di = Int(a[1]), ds.indices.contains(di), let slot = Int(a[2]), let id = UInt32(a[3]) {
+                model.refresh(captureThumbs: false)
+                if let w = model.window(id) { model.stackWindow(w, display: ds[di].uuid, slot: slot) }
+            }
+        case "fan":
+            // fan <屏幕序号> <格子> <步数>：转轮停在那儿不松手（截图看立体展开）；wheelend 松手
+            if a.count > 3, let di = Int(a[1]), ds.indices.contains(di), let slot = Int(a[2]), let n = Int(a[3]) {
+                deck.debugWheel(display: ds[di].uuid, slot: slot, steps: n, hold: true)
+            }
+        case "wheelend": deck.debugEndWheel()
         case "wheel":
             // wheel <屏幕序号> <格子> <步数>：和 ⌥ 滚轮是同一个函数
             if a.count > 3, let di = Int(a[1]), ds.indices.contains(di), let slot = Int(a[2]), let n = Int(a[3]) {

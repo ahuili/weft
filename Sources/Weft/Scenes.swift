@@ -95,8 +95,21 @@ extension AppModel {
         Set(scenes.flatMap { sceneSlots($0).compactMap { $0.elsewhere ? $0.window?.id : nil } }).count
     }
 
-    private func placement(_ c: WorkContext, on u: String, used: inout Set<UInt32>) -> (display: String, spec: StageSpec, slots: [UInt32?])? {
+    private func placement(_ c: WorkContext, on u: String, used: inout Set<UInt32>) -> (display: String, spec: StageSpec, slots: [UInt32?], stacks: [UInt32: [UInt32]])? {
         guard let pl = c.plan?.first else { return nil }
+        // 叠放：按格子找到那一格最上面的窗口，再找压在它下面的
+        var stacks: [UInt32: [UInt32]] = [:]
+        if let st = pl.stacks {
+            for (j, slot) in sceneSlots(c).enumerated() where j < st.count && !st[j].isEmpty {
+                guard let top = slot.window else { continue }
+                var ids: [UInt32] = []
+                for m in st[j] {
+                    let pool = windows.filter { !used.contains($0.id) && $0.id != top.id && !ids.contains($0.id) && $0.axAvailable }
+                    if let w = ContextResolver.resolve([m], in: pool).first { ids.append(w.id) }
+                }
+                if !ids.isEmpty { stacks[top.id] = ids }
+            }
+        }
         // 版式和位置照场景的来：在别的桌面上的那一格空着，别的窗口不挪位；已经关掉的窗口不占格子
         let slots = Array(liveSlots(c).map { s -> UInt32? in
             guard let w = s.window, w.axAvailable, !used.contains(w.id), stage.stageable(w) || w.isMinimized else { return nil }
@@ -104,7 +117,9 @@ extension AppModel {
             return w.id
         }.prefix(pl.layout.slots))
         guard slots.contains(where: { $0 != nil }) else { return nil }
-        return (u, pl.spec, slots)
+        stacks = stacks.filter { slots.contains($0.key) }
+        for ids in stacks.values { ids.forEach { used.insert($0) } }
+        return (u, pl.spec, slots, stacks)
     }
 
     /// 把场景摆到某块屏上（nil = 现在操作的那块屏）。别的屏不受影响
@@ -197,7 +212,13 @@ extension AppModel {
         var members = st.slots.map { id in id.flatMap { window($0) }.map(ContextResolver.member) ?? WorkContext.Member(bundleID: "", title: "") }
         while members.last?.bundleID.isEmpty == true { members.removeLast() }
         let idx = profile.displays.firstIndex { $0.uuid == u } ?? 0
-        return ScenePlacement(displayUUID: u, displayIndex: idx, spec: st.spec, members: members)
+        var pl = ScenePlacement(displayUUID: u, displayIndex: idx, spec: st.spec, members: members)
+        let stacks = members.indices.map { j -> [WorkContext.Member] in
+            guard j < st.slots.count, let top = st.slots[j] else { return [] }
+            return (st.stacks[top] ?? []).compactMap { window($0) }.map(ContextResolver.member)
+        }
+        if stacks.contains(where: { !$0.isEmpty }) { pl.stacks = stacks }
+        return pl
     }
 
     func renameScene(_ id: String, _ name: String) {
@@ -273,7 +294,7 @@ extension AppModel {
     @discardableResult
     func applyMany(_ pairs: [(WorkContext, String)]) -> Int {
         var used = Set<UInt32>()
-        var list: [(display: String, spec: StageSpec, slots: [UInt32?])] = []
+        var list: [(display: String, spec: StageSpec, slots: [UInt32?], stacks: [UInt32: [UInt32]])] = []
         var shown: [(String, String)] = []
         for (c, u) in pairs {
             guard let p = placement(c, on: u, used: &used) else { continue }
@@ -321,7 +342,8 @@ extension AppModel {
                 pl.members = ms
             }
             if old?.members.map(\.bundleID) != pl.members.map(\.bundleID) || old?.members.map(\.lastWindowID) != pl.members.map(\.lastWindowID)
-                || old?.layout != pl.layout || abs((old?.ratio ?? 0) - pl.ratio) > 0.005 || old?.mirrored != pl.mirrored {
+                || old?.layout != pl.layout || abs((old?.ratio ?? 0) - pl.ratio) > 0.005 || old?.mirrored != pl.mirrored
+                || old?.stacks?.map { $0.map(\.bundleID) } != pl.stacks?.map { $0.map(\.bundleID) } {
                 contexts[i].plan = [pl]
                 contexts[i].members = pl.members.filter { !$0.bundleID.isEmpty }
                 contexts[i].autoSolo = nil   // 你动过了：是正经场景了，不会被自动收掉

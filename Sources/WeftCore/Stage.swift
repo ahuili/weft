@@ -180,18 +180,31 @@ public struct DisplayStage: Equatable {
     public var active: Int
     /// 锁住的格子：别的窗口不会把它换掉
     public var locked: Set<Int> = []
+    /// 叠放：某个格子最上面那个窗口（key）下面还压着哪些窗口（从最底下到紧挨着它的那个）。
+    /// 按最上面的窗口记，换位、换版式、拖到别的屏时整摞跟着走
+    public var stacks: [UInt32: [UInt32]] = [:]
+    /// 一摞最多几个窗口（含最上面那个）
+    public static let maxStack = 5
 
-    public init(spec: StageSpec, slots: [UInt32?], active: Int = 0, locked: Set<Int> = []) {
+    public init(spec: StageSpec, slots: [UInt32?], active: Int = 0, locked: Set<Int> = [], stacks: [UInt32: [UInt32]] = [:]) {
         self.spec = spec
         var s = Array(slots.prefix(spec.layout.slots))
         while s.count < spec.layout.slots { s.append(nil) }
         self.slots = s
         self.active = min(max(0, active), max(0, s.count - 1))
         self.locked = locked.filter { $0 < s.count }
+        let tops = Set(s.compactMap { $0 })
+        self.stacks = stacks.filter { tops.contains($0.key) && !$0.value.isEmpty }
     }
 
-    /// 台上的窗口（按格子顺序，跳过空格）
+    /// 台上的窗口（每格最上面那个，按格子顺序，跳过空格）
     public var windows: [UInt32] { slots.compactMap { $0 } }
+    /// 压在下面的窗口
+    public var stacked: [UInt32] { slots.compactMap { $0 }.flatMap { stacks[$0] ?? [] } }
+    /// 台上所有窗口（含压在下面的）
+    public var allWindows: [UInt32] { windows + stacked }
+    /// 某个格子下面压着几个
+    public func depth(_ i: Int) -> Int { slots.indices.contains(i) ? slots[i].flatMap { stacks[$0]?.count } ?? 0 : 0 }
     public var emptySlots: [Int] { slots.indices.filter { slots[$0] == nil } }
     public func index(of id: UInt32) -> Int? { slots.firstIndex(of: id) }
 }
@@ -323,8 +336,18 @@ public final class StageManager {
     /// 这个窗口能不能放进这么宽的格子
     public func fits(_ id: UInt32, width: CGFloat) -> Bool { (learnedMin[id] ?? 0) <= width + 40 }
 
-    public var onStage: Set<UInt32> { Set(stages.values.flatMap(\.windows)) }
-    public func isOnStage(_ id: UInt32) -> Bool { locate(id) != nil }
+    public var onStage: Set<UInt32> { Set(stages.values.flatMap(\.allWindows)) }
+    public func isOnStage(_ id: UInt32) -> Bool { locate(id) != nil || stackLocate(id) != nil }
+
+    /// 压在某一摞下面的窗口：在哪块屏、哪一格、那一摞最上面是谁
+    public func stackLocate(_ id: UInt32) -> (display: String, slot: Int, top: UInt32)? {
+        for (u, s) in stages {
+            for (top, m) in s.stacks where m.contains(id) {
+                if let i = s.index(of: top) { return (u, i, top) }
+            }
+        }
+        return nil
+    }
 
     public func locate(_ id: UInt32) -> (display: String, slot: Int)? {
         for (u, s) in stages { if let i = s.index(of: id) { return (u, i) } }
@@ -357,9 +380,52 @@ public final class StageManager {
     }
 
     private func frames(_ st: DisplayStage, in rect: CGRect) -> [CGRect] {
+        var fr = baseFrames(st, in: rect)
+        // 叠着的格子：最上面那个往右下错开（下面压几个就错开几步）
+        for (i, id) in st.slots.enumerated() where i < fr.count {
+            if let id, let n = st.stacks[id]?.count, n > 0 { fr[i] = Self.layer(fr[i], n, of: n) }
+        }
+        return fr
+    }
+
+    /// 不算叠放的格子位置（整摞占的范围）
+    private func baseFrames(_ st: DisplayStage, in rect: CGRect) -> [CGRect] {
         var mins: [Int: CGFloat] = [:]
         for (i, id) in st.slots.enumerated() { if let id, let m = learnedMin[id] { mins[i] = m } }
         return StageGeometry.frames(st.spec, in: rect, gap: gap, minWidths: mins)
+    }
+
+    /// 某块屏每格整摞占的范围（不算错开）
+    public func baseSlotFrames(_ u: String) -> [CGRect] {
+        guard let st = stages[u], let d = actions.profile().display(uuid: u) else { return [] }
+        return baseFrames(st, in: d.visible)
+    }
+
+    /// 叠放每层错开多少
+    public static let stackStep: CGFloat = 18
+
+    /// 一摞里第 k 层（0 = 最底下）的位置：越往上越往右下，下面的露出左边和上边一条
+    public static func layer(_ f: CGRect, _ k: Int, of n: Int) -> CGRect {
+        let d = stackStep
+        return CGRect(x: f.minX + CGFloat(k) * d, y: f.minY + CGFloat(k) * d,
+                      width: max(200, f.width - CGFloat(n) * d), height: max(150, f.height - CGFloat(n) * d))
+    }
+
+    /// 压在下面的窗口各自该在的位置
+    private func stackTargets(_ st: DisplayStage, in rect: CGRect) -> [UInt32: CGRect] {
+        let base = baseFrames(st, in: rect)
+        var out: [UInt32: CGRect] = [:]
+        for (i, top) in st.slots.enumerated() where i < base.count {
+            guard let top, let m = st.stacks[top], !m.isEmpty else { continue }
+            for (k, id) in m.enumerated() { out[id] = Self.layer(base[i], k, of: m.count) }
+        }
+        return out
+    }
+
+    /// 某块屏上压在下面的窗口的位置（界面画缩略图 / 调试用）
+    public func stackFrames(_ u: String) -> [UInt32: CGRect] {
+        guard let st = stages[u], let d = actions.profile().display(uuid: u) else { return [:] }
+        return stackTargets(st, in: d.visible)
     }
 
     // MARK: 进出
@@ -423,6 +489,8 @@ public final class StageManager {
     @discardableResult
     public func present(_ w: WindowInfo, on display: String? = nil, slot: Int? = nil, focus: Bool = true) -> Bool {
         guard isActive else { return false }
+        if stackLocate(w.id) != nil, display == nil, slot == nil { return raiseInStack(w.id, focus: focus) }
+        if stackLocate(w.id) != nil { unstack(w.id) }
         touch()
         companions.remove(w.id)
         // 已经在台上
@@ -468,6 +536,123 @@ public final class StageManager {
         if focus { actions.focus(w.id) }
         if let o = displaced { hide(o); pushHistory(target, idx, o) }
         return true
+    }
+
+    // MARK: 叠放
+
+    /// 最上面的窗口没了、换了：一摞里剩下的怎么办。空格子 → 下面那个顶上来；最上面被换成了别的窗口 → 整摞退到后台
+    private func tidyStacks(_ u: String) {
+        guard var st = stages[u], !st.stacks.isEmpty else { return }
+        let tops = Set(st.slots.compactMap { $0 })
+        for (top, m) in st.stacks where !tops.contains(top) {
+            st.stacks[top] = nil
+            var rest = m
+            // 原来那一格空了（关掉 / 请走了）：最上面那层顶上来
+            if let i = lastSlot[top], st.slots.indices.contains(i), st.slots[i] == nil, let next = rest.popLast() {
+                st.slots[i] = next
+                if !rest.isEmpty { st.stacks[next] = rest }
+                log("一摞最上面的没了，下面的顶上来：\(next)")
+                continue
+            }
+            for id in rest { hide(id) }
+        }
+        stages[u] = st
+    }
+
+    /// 每个窗口上次在第几格（判断「这一格空出来的是不是那一摞」）
+    private var lastSlot: [UInt32: Int] = [:]
+    private func recordSlots(_ u: String) {
+        guard let st = stages[u] else { return }
+        for (i, id) in st.slots.enumerated() { if let id { lastSlot[id] = i } }
+    }
+
+    /// 这一格够不够大、能不能叠（太小的格子叠了每层都看不清）
+    public func canStack(display u: String, slot i: Int) -> Bool {
+        guard let st = stages[u], let d = actions.profile().display(uuid: u), !st.locked.contains(i) else { return false }
+        let base = baseFrames(st, in: d.visible)
+        return base.indices.contains(i) && base[i].width >= 640 && base[i].height >= 420
+    }
+
+    /// 把窗口叠到某一格上（它成为最上面的，原来的压下去）。一摞满 5 个时最底下那个退到后台
+    @discardableResult
+    public func stackOnto(_ w: WindowInfo, display u: String, slot i: Int) -> Bool {
+        guard isActive, var st = stages[u], st.slots.indices.contains(i), !st.locked.contains(i) else { return false }
+        if st.slots[i] != nil && !canStack(display: u, slot: i) { log("格子太小，不叠：\(i)"); return false }
+        if st.slots[i] == w.id { return true }
+        touch(); snapshot()
+        companions.remove(w.id)
+        // 从原来的地方拿出来
+        var carried: [UInt32] = []
+        if let (v, j) = locate(w.id) {
+            carried = stages[v]!.stacks.removeValue(forKey: w.id) ?? []
+            stages[v]!.slots[j] = nil
+            if v != u { layout(v) }
+        } else if let (v, _, top) = stackLocate(w.id) {
+            stages[v]!.stacks[top]?.removeAll { $0 == w.id }
+            if v != u { layout(v) }
+        }
+        st = stages[u]!
+        bringBack(w)
+        var pile = carried
+        if let old = st.slots[i] {
+            pile = (st.stacks.removeValue(forKey: old) ?? []) + [old] + carried
+        }
+        pile.removeAll { $0 == w.id }
+        while pile.count > DisplayStage.maxStack - 1 {
+            let out = pile.removeFirst()
+            hide(out)
+            pushHistory(u, i, out)
+        }
+        st.slots[i] = w.id
+        if !pile.isEmpty { st.stacks[w.id] = pile }
+        st.active = i
+        stages[u] = st
+        home[w.id] = u
+        focusedDisplay = u
+        layout(u)
+        actions.focus(w.id)
+        log("叠上去：\(w.appName) → 格子 \(i)（这一摞 \(pile.count + 1) 个）")
+        onRelayout(u)
+        return true
+    }
+
+    /// 一摞里的某个窗口翻到最上面（点了露出来的边、转轮选中）。原来最上面的压到它下面一层
+    @discardableResult
+    public func raiseInStack(_ id: UInt32, focus: Bool = true) -> Bool {
+        guard let (u, i, top) = stackLocate(id), var st = stages[u] else { return false }
+        touch()
+        var m = st.stacks.removeValue(forKey: top) ?? []
+        m.removeAll { $0 == id }
+        m.append(top)
+        st.slots[i] = id
+        st.stacks[id] = m
+        st.active = i
+        stages[u] = st
+        focusedDisplay = u
+        layout(u)
+        if focus { actions.focus(id) }
+        log("翻到最上面：\(id)")
+        onRelayout(u)
+        return true
+    }
+
+    /// 整摞一起摆出来（换场景）时，按从下到上的顺序点一遍，叠的前后才对
+    private var needsOrder = Set<String>()
+    private func orderStacks() {
+        for u in needsOrder {
+            guard let st = stages[u] else { continue }
+            for (top, m) in st.stacks { for id in m { actions.focus(id) }; actions.focus(top) }
+        }
+        needsOrder.removeAll()
+    }
+
+    /// 从一摞里拿出来（不藏）
+    public func unstack(_ id: UInt32) {
+        guard let (u, _, top) = stackLocate(id) else { return }
+        touch()
+        stages[u]!.stacks[top]?.removeAll { $0 == id }
+        if stages[u]!.stacks[top]?.isEmpty == true { stages[u]!.stacks[top] = nil }
+        layout(u)
     }
 
     // MARK: 拖进来插入
@@ -541,13 +726,19 @@ public final class StageManager {
         guard isActive, stages[pl.display] != nil else { return false }
         touch(); snapshot()
         companions.remove(w.id)
+        var carried: [UInt32] = []
         if let (u, i) = locate(w.id), u != pl.display {
+            carried = stages[u]!.stacks.removeValue(forKey: w.id) ?? []
             stages[u]!.slots[i] = nil
             layout(u); onRelayout(u)
         }
+        if stackLocate(w.id) != nil { unstack(w.id) }
         bringBack(w)
         let old = stages[pl.display]!
-        var st = DisplayStage(spec: pl.spec, slots: pl.slots, locked: pl.spec == old.spec ? old.locked : [])
+        var stacks = old.stacks
+        if !carried.isEmpty { stacks[w.id] = carried }
+        if let r = pl.replaces { for id in stacks.removeValue(forKey: r) ?? [] { hide(id) } }
+        var st = DisplayStage(spec: pl.spec, slots: pl.slots, locked: pl.spec == old.spec ? old.locked : [], stacks: stacks)
         st.active = st.slots.firstIndex(of: w.id) ?? 0
         stages[pl.display] = st
         home[w.id] = pl.display
@@ -568,10 +759,13 @@ public final class StageManager {
         st.slots[slot] = nil
         stages[u] = st
         hide(id)
+        // 下面压着窗口：顶上来
+        if st.stacks[id] != nil { layout(u) }
     }
 
     /// 放手：从格子里拿下来，但不藏（变成随手窗口时用）
     public func letGo(_ id: UInt32) {
+        if stackLocate(id) != nil { unstack(id); return }
         guard let (u, i) = locate(id), var st = stages[u] else { return }
         touch()
         st.slots[i] = nil
@@ -580,6 +774,7 @@ public final class StageManager {
 
     /// 把台上的窗口请下去（格子空出来）
     public func dismiss(_ id: UInt32) {
+        if stackLocate(id) != nil { unstack(id); hide(id); return }
         guard let (u, i) = locate(id) else { return }
         clear(display: u, slot: i)
         if let s = stages[u], let other = s.slots[s.active] ?? s.windows.first { actions.focus(other) }
@@ -600,7 +795,8 @@ public final class StageManager {
         // 窗口按旧格子顺序排，空格子去掉；锁住的格子尽量保持同一个编号
         let keep = old?.windows ?? []
         var st = DisplayStage(spec: spec, slots: Array(keep.prefix(spec.layout.slots)), active: old?.active ?? 0,
-                              locked: old?.locked ?? [])
+                              locked: old?.locked ?? [], stacks: old?.stacks ?? [:])
+        for t in keep.dropFirst(spec.layout.slots) { for id in old?.stacks[t] ?? [] { hide(id) } }
         let overflow = keep.dropFirst(spec.layout.slots)
         for c in candidates where !st.emptySlots.isEmpty && !isOnStage(c.id) && !st.slots.contains(c.id) && stageable(c) {
             bringBack(c)
@@ -639,6 +835,11 @@ public final class StageManager {
 
     /// 按格子摆：slots[i] = 第 i 格放谁（nil = 空着，位置不挪）。compact = 去掉找不到的窗口、往前补（AI 排布用）
     public func applySlots(_ scene: [(display: String, spec: StageSpec, slots: [UInt32?])], compact: Bool = false) {
+        applySlots(scene.map { ($0.display, $0.spec, $0.slots, [UInt32: [UInt32]]()) }, compact: compact)
+    }
+
+    /// 同上，带叠放（key = 那一格最上面的窗口，value = 压在下面的，从最底下开始）
+    public func applySlots(_ scene: [(display: String, spec: StageSpec, slots: [UInt32?], stacks: [UInt32: [UInt32]])], compact: Bool = false) {
         let live = actions.windows()
         if !isActive {
             remember(live, actions.profile())
@@ -659,19 +860,29 @@ public final class StageManager {
             slots = Array(slots.prefix(s.spec.layout.slots))
             let ids = slots.compactMap { $0 }
             guard !ids.isEmpty else { continue }
-            for id in ids {
+            var stacks: [UInt32: [UInt32]] = [:]
+            for (top, m) in s.stacks where ids.contains(top) {
+                let ok = Array(m.filter { byID[$0] != nil && !placed.contains($0) && !ids.contains($0) }.suffix(DisplayStage.maxStack - 1))
+                ok.forEach { placed.insert($0) }
+                if !ok.isEmpty { stacks[top] = ok }
+            }
+            let all = ids + stacks.values.flatMap { $0 }
+            for id in all {
                 companions.remove(id)
                 if let (u, i) = locate(id), u != s.display { stages[u]!.slots[i] = nil }
+                if let (u, _, top) = stackLocate(id), u != s.display { stages[u]!.stacks[top]?.removeAll { $0 == id } }
                 bringBack(byID[id]!)
                 home[id] = s.display
             }
-            // 被替换下来的窗口
-            for id in stages[s.display]?.windows ?? [] where !ids.contains(id) { hide(id) }
-            stages[s.display] = DisplayStage(spec: s.spec, slots: slots)
+            // 被替换下来的窗口（含压在下面的）
+            for id in stages[s.display]?.allWindows ?? [] where !all.contains(id) { hide(id) }
+            stages[s.display] = DisplayStage(spec: s.spec, slots: slots, stacks: stacks)
+            needsOrder.insert(s.display)
         }
         markSpaces()
         sweep(actions.windows())
         layoutAll()
+        orderStacks()
         if let first = scene.first, let id = stages[first.display]?.windows.first {
             focusedDisplay = first.display
             actions.focus(id)
@@ -696,6 +907,12 @@ public final class StageManager {
             focusedDisplay = u
             stages[u]!.active = i
             return .onStage
+        }
+        // 点了一摞里露出来的那条边：它翻到最上面（Weft 自己刚摆完不算；鼠标还按着可能在拖，松开再说）
+        if stackLocate(id) != nil {
+            guard Date().timeIntervalSince(lastOwnAction) >= promoteDelay else { return .ignored }
+            if CGEventSource.buttonState(.combinedSessionState, button: .left) { return .later }
+            return raiseInStack(id, focus: false) ? .promoted : .ignored
         }
         guard autoPromote else { return .ignored }
         guard Date().timeIntervalSince(lastOwnAction) >= promoteDelay else { return .later }
@@ -734,7 +951,22 @@ public final class StageManager {
                 guard let why else { continue }
                 stages[u]!.slots[i] = nil
                 changed = true
+                // 下面压着窗口：最上面那层顶上来（不从历史里找）
+                if var m = stages[u]!.stacks.removeValue(forKey: id), let next = m.popLast() {
+                    stages[u]!.slots[i] = next
+                    if !m.isEmpty { stages[u]!.stacks[next] = m }
+                    log("\(why)，这一摞下面的顶上来 \(next)")
+                    continue
+                }
                 if let back = refill(u, i, byID) { log("\(why)，格子里补回刚才的窗口 \(back)") } else { log("\(why)，格子空出来") }
+            }
+            // 压在下面的：关了 / 最小化 / 隐藏了就从这一摞里拿掉
+            for (top, m) in stages[u]!.stacks {
+                let keep = m.filter { id in
+                    guard let w = byID[id] else { return actions.exists(id) }
+                    return !(settled && (w.isMinimized || (w.pid > 0 && NSRunningApplication(processIdentifier: w.pid)?.isHidden == true)))
+                }
+                if keep != m { stages[u]!.stacks[top] = keep.isEmpty ? nil : keep; changed = true; log("一摞里少了 \(m.count - keep.count) 个") }
             }
             if changed { layout(u); onRelayout(u) }
         }
@@ -824,6 +1056,27 @@ public final class StageManager {
                 if !byUser && !back && snapTries[id, default: 0] >= 2 { continue }
                 if handleDrift(u, i, id, f, t, d, prof, byUser: byUser) { driftSince[id] = nil; return true }
             }
+            // 压在下面的窗口跑偏了：你拖到别的格子 = 叠到那一格上；别的情况吸回去
+            for (id, t) in stackTargets(st, in: d.visible) {
+                guard let f = actual[id], !stash.isStashed(id) else { continue }
+                if Self.near(f, t, 6) { driftSince[id] = nil; snapTries[id] = nil; continue }
+                off.insert(id)
+                let byUser = force || (released && dragged.contains(id))
+                if byUser, let (to, j) = slotHit(f.center), !(to == u && stackLocate(id)?.slot == j),
+                   let w = actions.windows().first(where: { $0.id == id }) {
+                    unstack(id)
+                    if stackOnto(w, display: to, slot: j) { return true }
+                }
+                let first = driftSince[id] ?? now
+                driftSince[id] = first
+                if !byUser && now.timeIntervalSince(first) < 1.0 { continue }
+                let n = snapTries[id, default: 0]
+                guard byUser || n < 2 else { continue }
+                snapTries[id] = n + 1
+                touch()
+                actions.setFrame(id, t)
+                return true
+            }
         }
         return false
     }
@@ -844,8 +1097,19 @@ public final class StageManager {
             for (i, id) in st.slots.enumerated() where i < fr.count {
                 if let id, let f = actual[id], !Self.near(f, fr[i], 6) { out.insert(id) }
             }
+            for (id, t) in stackTargets(st, in: d.visible) { if let f = actual[id], !Self.near(f, t, 6) { out.insert(id) } }
         }
         return out
+    }
+
+    /// 某个点落在哪块屏的哪一格
+    public func slotHit(_ p: CGPoint) -> (String, Int)? {
+        for d in actions.profile().displays where stages[d.uuid] != nil && d.frame.contains(p) {
+            guard let st = stages[d.uuid] else { continue }
+            let base = baseFrames(st, in: d.visible)
+            if let j = base.indices.first(where: { base[$0].contains(p) }) { return (d.uuid, j) }
+        }
+        return nil
     }
 
     /// 调试：磁吸为什么没动
@@ -887,6 +1151,12 @@ public final class StageManager {
                 let other = stages[to]!.slots[j]
                 stages[to]!.slots[j] = id
                 stages[u]!.slots[i] = other
+                if to != u {
+                    // 整摞跟着走
+                    let mine = stages[u]!.stacks.removeValue(forKey: id), theirs = other.flatMap { stages[to]!.stacks.removeValue(forKey: $0) }
+                    if let mine { stages[to]!.stacks[id] = mine }
+                    if let other, let theirs { stages[u]!.stacks[other] = theirs }
+                }
                 if let other { home[other] = u }
                 home[id] = to
                 stages[to]!.active = j
@@ -994,7 +1264,7 @@ public final class StageManager {
                 if let w = byID[id] { bringBack(w); home[id] = u } else { prev[u]!.slots[i] = nil }
             }
         }
-        let want = Set(prev.values.flatMap(\.windows))
+        let want = Set(prev.values.flatMap(\.allWindows))
         let cur = onStage
         for (u, st) in prev { stages[u] = st }
         for id in cur where !want.contains(id) { hide(id) }
@@ -1099,7 +1369,12 @@ public final class StageManager {
                 guard let id else { continue }
                 if let w = byID[id], w.axAvailable, !isOnStage(id) { bringBack(w); home[id] = u } else { slots[i] = nil }
             }
-            stages[u] = DisplayStage(spec: st.spec, slots: slots, active: st.active, locked: st.locked)
+            var stacks: [UInt32: [UInt32]] = [:]
+            for (top, m) in st.stacks where slots.contains(top) {
+                let ok = m.filter { id in if let w = byID[id], w.axAvailable, !isOnStage(id) { bringBack(w); home[id] = u; return true }; return false }
+                if !ok.isEmpty { stacks[top] = ok }
+            }
+            stages[u] = DisplayStage(spec: st.spec, slots: slots, active: st.active, locked: st.locked, stacks: stacks)
             log("屏幕插回来了：恢复它的舞台")
         }
         markSpaces()
@@ -1115,7 +1390,10 @@ public final class StageManager {
     }
 
     private func layout(_ u: String) {
+        tidyStacks(u)
+        recordSlots(u)
         guard let st = stages[u], let d = actions.profile().display(uuid: u) else { return }
+        for (id, f) in stackTargets(st, in: d.visible) { actions.setFrame(id, f); everStaged.insert(id) }
         if spaceOf[u] == nil, let sp = actions.displaySpaces()[u] { spaceOf[u] = sp }
         let fr = frames(st, in: d.visible)
         let ids = st.windows

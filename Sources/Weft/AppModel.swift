@@ -533,6 +533,30 @@ final class AppModel: ObservableObject {
     private var dragWin: WindowInfo?
     private var dragFrom: (frame: CGRect, display: String?)?
     private var dragPlan: StageManager.InsertPlan?
+    private var dragStack: (display: String, slot: Int)?
+
+    // MARK: 叠放
+
+    /// 右键「叠到…」能选的格子：台上每个够大的、有窗口的格子
+    func stackTargets(for w: WindowInfo) -> [(label: String, display: String, slot: Int)] {
+        var out: [(label: String, display: String, slot: Int)] = []
+        let multi = profile.displays.filter { stage.stage(for: $0.uuid) != nil }.count > 1
+        for d in profile.displays {
+            guard let st = stage.stage(for: d.uuid) else { continue }
+            for (i, top) in st.slots.enumerated() {
+                guard let top, top != w.id, stage.canStack(display: d.uuid, slot: i), let t = window(top) else { continue }
+                let n = st.depth(i) + 1
+                let screen = multi ? "\(role(of: d.uuid).map(DisplayProfile.roleName) ?? "屏幕") · " : ""
+                out.append(("\(screen)\(t.appName)\(t.title.isEmpty ? "" : "「\(t.title.prefix(18))」")上面\(n > 1 ? "（已叠 \(n) 个）" : "")", d.uuid, i))
+            }
+        }
+        return out
+    }
+
+    func stackWindow(_ w: WindowInfo, display u: String, slot i: Int) {
+        guard stage.stackOnto(w, display: u, slot: i) else { Toast.show("这一格太小或锁着，叠不了", seconds: 1.4); return }
+        stageChanged(); syncScenes()
+    }
 
     private func dragBegan() {
         dragPlan = nil
@@ -556,6 +580,21 @@ final class AppModel: ObservableObject {
         guard let w = dragWin, let from = dragFrom, let f = system.frames(of: [w.id])[w.id] else { return }
         let moved = abs(f.minX - from.frame.minX) + abs(f.minY - from.frame.minY) > 30 && abs(f.width - from.frame.width) < 4
         let p = CGEvent(source: nil)?.location ?? f.center
+        // 按住 ⌥：叠到落点那一格上（同一块屏也行）
+        if moved, NSEvent.modifierFlags.contains(.option), let (u, i) = stage.slotHit(p), let top = stage.stage(for: u)?.slots[i], top != w.id,
+           stage.canStack(display: u, slot: i), let base = stage.baseSlotFrames(u).dropFirst(i).first {
+            // 叠上去以后它在最上面那层的位置
+            let k = min((stage.stage(for: u)?.depth(i) ?? 0) + 1, DisplayStage.maxStack - 1)
+            if dragStack?.display != u || dragStack?.slot != i || dragPlan != nil {
+                dragStack = (u, i)
+                dragPlan = nil
+                onDropPreview(StageManager.layer(base, k, of: k), "叠上去 · 第 \(k + 1) 层")
+            }
+            return
+        }
+        let hadStack = dragStack != nil
+        dragStack = nil
+        if hadStack { onDropPreview(nil, "") }
         let u = profile.display(containing: p)?.uuid
         guard moved, let u, u != from.display, let plan = stage.planInsert(w.id, display: u, at: p) else {
             if dragPlan != nil { dragPlan = nil; onDropPreview(nil, "") }
@@ -570,7 +609,12 @@ final class AppModel: ObservableObject {
     }
 
     private func dragEnded() {
-        defer { dragWin = nil; dragFrom = nil; dragPlan = nil; dragTimer?.invalidate(); dragTimer = nil }
+        defer { dragWin = nil; dragFrom = nil; dragPlan = nil; dragStack = nil; dragTimer?.invalidate(); dragTimer = nil }
+        if let w = dragWin, let (u, i) = dragStack {
+            onDropPreview(nil, "")
+            if stage.stackOnto(w, display: u, slot: i) { stageChanged(); syncScenes() }
+            return
+        }
         guard let w = dragWin, dragPlan != nil else { return }
         onDropPreview(nil, "")
         // 按松手那一刻的位置重新算一次

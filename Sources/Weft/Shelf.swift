@@ -405,6 +405,14 @@ struct WindowMenu: View {
         if model.stageActive && model.stage.companions.contains(window.id) {
             Button("📎 这是附属窗口（浮着）· 放进舞台…") { model.stage.companions.remove(window.id); model.focus(window) }
         }
+        if model.stageActive {
+            let targets = model.stackTargets(for: window)
+            if !targets.isEmpty {
+                Menu("🗂 叠到…") {
+                    ForEach(targets, id: \.label) { t in Button(t.label) { model.stackWindow(window, display: t.display, slot: t.slot) } }
+                }
+            }
+        }
         if model.stageActive && model.stage.isOnStage(window.id) {
             Button("请下台（退到后台）") { model.dismissFromStage(window.id) }
         }

@@ -43,6 +43,8 @@ public struct ScenePlacement: Codable, Equatable {
     public var members: [WorkContext.Member]
     /// AI 给这块屏单独起的名字（拆成独立场景时用）
     public var name: String?
+    /// 叠放：第 i 格最上面那个窗口下面还压着谁（从最底下开始）。没有叠放的场景为 nil
+    public var stacks: [[WorkContext.Member]]?
 
     public init(displayUUID: String?, displayIndex: Int, spec: StageSpec, members: [WorkContext.Member], name: String? = nil) {
         self.displayUUID = displayUUID; self.displayIndex = displayIndex

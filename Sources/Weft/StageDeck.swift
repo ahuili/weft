@@ -249,6 +249,10 @@ final class StageDeck {
 
     private var tap: CFMachPort?
     private var wheel: (display: String, slot: Int, ring: [WindowInfo], index: Int)?
+    /// 这次转轮是在一摞里翻（不换窗口，只选哪个翻到最上面）
+    private var fanMode = false
+    private var fan: NSPanel?
+    let fanState = WheelState()
     private var accum: CGFloat = 0
     private var lastStep = Date.distantPast
     private var hud: NSPanel?
@@ -313,6 +317,19 @@ final class StageDeck {
     }
 
     private func beginWheel(_ u: String, _ j: Int) -> Bool {
+        // 叠着的格子：在这一摞里翻
+        if let st = model.stage.stage(for: u), st.depth(j) > 0, let top = st.slots[j] {
+            closePicker()
+            let ids = [top] + (st.stacks[top] ?? []).reversed()
+            let ring = ids.compactMap { model.window($0) }
+            guard ring.count > 1 else { return false }
+            fanMode = true
+            wheel = (u, j, ring, 0)
+            accum = 0
+            showFan()
+            return true
+        }
+        fanMode = false
         if model.stage.stage(for: u)?.locked.contains(j) == true { Toast.show("🔒 这个格子锁住了", seconds: 0.9); return false }
         closePicker()
         model.refresh(captureThumbs: false)
@@ -328,11 +345,12 @@ final class StageDeck {
         return true
     }
 
-    func debugWheel(display u: String, slot j: Int, steps: Int) {
+    func debugWheel(display u: String, slot j: Int, steps: Int, hold: Bool = false) {
         guard beginWheel(u, j) else { return }
         for _ in 0..<abs(steps) { turn(steps > 0 ? 1 : -1) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.endWheel() }
+        if !hold { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.endWheel() } }
     }
+    func debugEndWheel() { endWheel() }
 
     func debugType(_ s: String) {
         guard isPickerVisible else { return }
@@ -347,7 +365,7 @@ final class StageDeck {
     private func slotAt(_ p: CGPoint) -> (String, Int)? {
         for d in model.system.profile().displays where d.frame.contains(p) {
             guard model.stage.stage(for: d.uuid) != nil else { return nil }
-            for (j, f) in model.stage.slotFrames(d.uuid).enumerated() where f.contains(p) { return (d.uuid, j) }
+            for (j, f) in model.stage.baseSlotFrames(d.uuid).enumerated() where f.contains(p) { return (d.uuid, j) }
         }
         return nil
     }
@@ -368,6 +386,10 @@ final class StageDeck {
         guard var w = wheel, w.ring.indices.contains(i) else { return }
         w.index = i
         wheel = w
+        if fanMode {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { fanState.index = i }
+            return
+        }
         let target = w.ring[w.index]
         model.assignStageSlot(display: w.display, slot: w.slot, with: target)
         hudState.ring = w.ring
@@ -378,8 +400,46 @@ final class StageDeck {
     private func endWheel() {
         guard let w = wheel else { return }
         wheel = nil
+        if fanMode {
+            fanMode = false
+            hideFan()
+            let pick = w.ring[max(0, w.index)].id
+            if w.index > 0, model.stage.raiseInStack(pick) { model.stageChanged(); model.syncScenes() }
+            else { model.system.focus(pick) }
+            return
+        }
         hud?.orderOut(nil)
         if let id = model.stage.stage(for: w.display)?.slots[w.slot] { model.system.focus(id) }
+    }
+
+    /// 一摞窗口斜着展开（像翻唱片），盖在这一格上
+    private func showFan() {
+        guard let w = wheel, let f = model.stage.baseSlotFrames(w.display).dropFirst(w.slot).first else { return }
+        fanState.ring = w.ring
+        fanState.index = 0
+        model.thumbnails.refresh(w.ring.map(\.id), maxWidth: 700) { [weak self] new in
+            self?.model.thumbs.merge(new) { $1 }
+        }
+        let p = fan ?? {
+            let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.level = .popUpMenu
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle, .transient, .fullScreenAuxiliary]
+            p.contentView = FirstClickHostingView(rootView: StackFanView(model: model, state: fanState, pick: { [weak self] i in self?.pickInWheel(i) }))
+            return p
+        }()
+        p.setFrame(nsRect(f), display: true)
+        p.alphaValue = 0
+        p.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; p.animator().alphaValue = 1 }
+        fan = p
+    }
+
+    private func hideFan() {
+        guard let p = fan else { return }
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) { p.orderOut(nil) }
     }
 
     private func showHUD() {
@@ -705,6 +765,63 @@ struct DropPreviewView: View {
             Text(state.label).font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .background(Capsule().fill(Color.purple.opacity(0.85)))
+        }
+    }
+}
+
+/// 一摞窗口立体展开：选中的在正中、正对着你，两边的往后斜，滚一下换一个
+struct StackFanView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var state: WheelState
+    var pick: (Int) -> Void = { _ in }
+
+    var body: some View {
+        GeometryReader { g in
+            let cw = min(g.size.width * 0.56, 640), ch = min(g.size.height * 0.62, cw * 0.66)
+            ZStack {
+                RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.35))
+                ForEach(Array(state.ring.enumerated()), id: \.element.id) { i, w in
+                    let off = Double(i - state.index)
+                    card(w, selected: i == state.index)
+                        .frame(width: cw, height: ch)
+                        .rotation3DEffect(.degrees(off == 0 ? 0 : (off > 0 ? -48 : 48)), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                        .scaleEffect(off == 0 ? 1 : 0.78)
+                        .offset(x: off == 0 ? 0 : (off > 0 ? 1 : -1) * (cw * 0.42 + CGFloat(abs(off) - 1) * cw * 0.16))
+                        .opacity(abs(off) > 3 ? 0 : 1)
+                        .zIndex(10 - abs(off))
+                        .onTapGesture { pick(i) }
+                }
+                VStack {
+                    Spacer()
+                    Text("⌥ + 滚动 翻 · 松开 ⌥ 翻到最上面 · \(state.index + 1)/\(state.ring.count)")
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                        .padding(.bottom, 14)
+                }
+            }
+            .frame(width: g.size.width, height: g.size.height)
+        }
+    }
+
+    @ViewBuilder func card(_ w: WindowInfo, selected: Bool) -> some View {
+        VStack(spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.4))
+                if let t = model.thumbs[w.id] {
+                    Image(nsImage: t).resizable().aspectRatio(contentMode: .fit)
+                } else {
+                    Image(nsImage: appIcon(w.pid)).resizable().frame(width: 72, height: 72)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.purple : .white.opacity(0.15), lineWidth: selected ? 3 : 1))
+            .shadow(color: .black.opacity(0.5), radius: selected ? 24 : 10, y: 8)
+            HStack(spacing: 6) {
+                Image(nsImage: appIcon(w.pid)).resizable().frame(width: 18, height: 18)
+                Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            }
+            .foregroundStyle(.white)
+            .opacity(selected ? 1 : 0.6)
         }
     }
 }

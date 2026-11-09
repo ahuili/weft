@@ -796,6 +796,59 @@ do {
     check(sm.isStashed(16) && !st.companions.contains(16), "App 下台后附属窗口跟着退到后台")
 }
 
+// MARK: - 叠放
+do {
+    let f8 = FakeWindows(sampleWindows(solo), solo)
+    let sm8 = StashManager(actions: f8, store: Store(dir: tmp.appendingPathComponent("stage8stack")))
+    let st8 = StageManager(actions: f8, stash: sm8); st8.verifyDelay = 0; st8.promoteDelay = 0; st8.settleDelay = 0
+    st8.enter(focused: 13)
+    let u = "LAPTOP"
+    st8.setSpec(StageSpec(.focus), display: u)
+    let w = { (id: UInt32) in f8.wins.first { $0.id == id }! }
+    check(st8.stackOnto(w(31), display: u, slot: 0), "叠上去")
+    var s8 = st8.stages[u]!
+    check(s8.slots[0] == 31 && s8.stacks[31] == [13] && st8.isOnStage(13) && !sm8.isStashed(13), "新的在最上面，原来的压下去、不藏 \(s8)")
+    let base = st8.slotFrames(u)[0]
+    let f13 = w(13).frame, f31 = w(31).frame
+    check(f31.minX - f13.minX == StageManager.stackStep && f31.minY - f13.minY == StageManager.stackStep && f31.width == f13.width,
+          "错开一层：下面的露出左边和上边 \(f13) \(f31)")
+    check(base == f31, "最上面那个就是格子的位置")
+    st8.reconcile()
+    check(!sm8.isStashed(13), "对账不会把压在下面的藏起来")
+    st8.stackOnto(w(41), display: u, slot: 0)
+    check(st8.stages[u]!.stacks[41] == [13, 31], "再叠一个：三层 \(st8.stages[u]!.stacks)")
+    check(st8.focusChanged(13) == .promoted && st8.stages[u]!.slots[0] == 13 && st8.stages[u]!.stacks[13] == [31, 41],
+          "点了最底下露出来的边：它翻到最上面，原来最上面的压到它下面一层 \(st8.stages[u]!.stacks)")
+    // 关掉最上面那个：下面那层顶上来
+    f8.wins.removeAll { $0.id == 13 }
+    st8.reconcile()
+    s8 = st8.stages[u]!
+    check(s8.slots[0] == 41 && s8.stacks[41] == [31], "关掉最上面的：下面那层顶上来 \(s8)")
+    // 换成左右：整摞跟着最上面的窗口
+    st8.setSpec(StageSpec(.split), display: u, fill: [w(21)])
+    s8 = st8.stages[u]!
+    check(s8.slots[0] == 41 && s8.stacks[41] == [31] && s8.slots[1] == 21, "换版式：一摞还在 \(s8)")
+    st8.swap(display: u, 0, 1)
+    check(st8.stages[u]!.slots[1] == 41 && st8.stages[u]!.stacks[41] == [31], "换位：整摞跟着走")
+    // 压在下面的被请走
+    st8.dismiss(31)
+    check(st8.stages[u]!.stacks.isEmpty && sm8.isStashed(31), "请走压在下面的：退到后台")
+    // 最多 5 个：再多就把最底下的退到后台
+    st8.setSpec(StageSpec(.focus), display: u)
+    let top0 = st8.stages[u]!.slots[0]!
+    for id: UInt32 in [11, 12, 21, 31, 41] where id != top0 { _ = st8.stackOnto(w(id), display: u, slot: 0) }
+    s8 = st8.stages[u]!
+    check(s8.allWindows.count == DisplayStage.maxStack && (s8.stacks[s8.slots[0]!]?.count ?? 0) == DisplayStage.maxStack - 1, "一摞最多 5 个 \(s8)")
+    // 换场景时带着叠放
+    st8.applySlots([(display: u, spec: StageSpec(.split), slots: [11, 21], stacks: [11: [12]])])
+    s8 = st8.stages[u]!
+    check(s8.slots == [11, 21] && s8.stacks[11] == [12] && !sm8.isStashed(12), "场景记住的叠放摆出来 \(s8)")
+    // 太小的格子不让叠
+    st8.setSpec(StageSpec(.quad), display: u, fill: [w(31), w(41)])
+    check(!st8.canStack(display: u, slot: 0) || st8.slotFrames(u)[0].width >= 640, "格子太小不让叠")
+    st8.exit()
+}
+
 print("\n离线测试：\(passes) 通过，\(failures) 失败")
 
 // MARK: - 在线测试：真实模型 + 假窗口（weft-selftest --live [model]）
