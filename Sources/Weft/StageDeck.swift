@@ -234,11 +234,13 @@ final class StageDeck {
                 p.backgroundColor = .clear
                 p.hasShadow = false
                 p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+                // 同一个格子的占位只建一次（以前每次舞台刷新都重建一遍 SwiftUI 视图）
+                p.contentView = NSHostingView(rootView: EmptySlotView(slot: j, open: { [weak self] in self?.showPicker(display: u, slot: j) }))
                 return p
             }()
-            p.contentView = NSHostingView(rootView: EmptySlotView(slot: j, open: { [weak self] in self?.showPicker(display: u, slot: j) }))
-            p.setFrame(nsRect(f), display: true)
-            p.orderFrontRegardless()
+            let r = nsRect(f)
+            if p.frame != r { p.setFrame(r, display: true) }
+            if !p.isVisible { p.orderFrontRegardless() }
             holders[k] = p
         }
     }

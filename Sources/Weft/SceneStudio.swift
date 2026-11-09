@@ -42,15 +42,85 @@ final class SceneStudio {
             w.titlebarAppearsTransparent = true
             w.title = "Weft 场景"
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: StudioView(model: model, state: state))
+            let h = NSHostingView(rootView: StudioView(model: model, state: state))
+            w.contentView = h
+            hosting = h
             w.setContentSize(NSSize(width: 1180, height: 760))
             w.minSize = NSSize(width: 980, height: 620)
             w.center()
             window = w
+            let nc = NotificationCenter.default
+            nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: w, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.thaw() }
+            }
+            nc.addObserver(forName: NSWindow.didResignKeyNotification, object: w, queue: .main) { [weak self] _ in
+                // 稍等一下：右键菜单、挑选面板这类一闪而过的失焦不冻
+                MainActor.assumeIsolated { self?.freezeSoon() }
+            }
         }
+        thaw()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    // MARK: 不在前台时冻住
+    //
+    // 工作台整窗是 SwiftUI，舞台、窗口列表、缩略图一变就整个重画。你在别的窗口干活时它开在旁边，
+    // 空闲也会占 CPU。所以失焦后换成一张截图（看起来一样），鼠标移进来或点回来再换回活的界面。
+
+    private var hosting: NSHostingView<StudioView>?
+    private var frozen = false
+
+    private func freezeSoon() {
+        let t = Timer(timeInterval: 1, repeats: false) { [weak self] _ in MainActor.assumeIsolated { self?.freeze() } }
+        RunLoop.main.add(t, forMode: .common)
+    }
+
+    private func freeze() {
+        guard !frozen, let w = window, let h = hosting, !w.isKeyWindow else { return }
+        // 鼠标还在工作台上（比如正在从侧栏往这里看）就先不冻
+        if w.isVisible && w.frame.contains(NSEvent.mouseLocation) { return }
+        let snap = FrozenView(frame: h.frame)
+        if w.isVisible, h.bounds.width > 0, let rep = h.bitmapImageRepForCachingDisplay(in: h.bounds) {
+            h.cacheDisplay(in: h.bounds, to: rep)
+            let img = NSImage(size: h.bounds.size)
+            img.addRepresentation(rep)
+            snap.image = img
+        }
+        snap.onWake = { [weak self] in self?.thaw() }
+        let frame = w.frame
+        w.contentView = snap
+        w.setFrame(frame, display: false)
+        frozen = true
+    }
+
+    private func thaw() {
+        guard frozen, let w = window, let h = hosting else { return }
+        frozen = false
+        let frame = w.frame
+        w.contentView = h
+        w.setFrame(frame, display: true)
+    }
+}
+
+/// 工作台失焦时的截图：鼠标一进来就换回活的界面
+final class FrozenView: NSImageView {
+    var onWake: () -> Void = {}
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        imageScaling = .scaleNone
+        imageAlignment = .alignTopLeft
+        autoresizingMask = [.width, .height]
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        super.updateTrackingAreas()
+    }
+    override func mouseEntered(with event: NSEvent) { onWake() }
+    override func mouseDown(with event: NSEvent) { onWake() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 struct StudioView: View {

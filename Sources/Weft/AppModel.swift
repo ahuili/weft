@@ -463,14 +463,15 @@ final class AppModel: ObservableObject {
         stageTimer?.invalidate()
         var n = 0
         // 焦点变化靠通知即时响应（⌘Tab、点 Dock）；定时器只做兜底和每 2 秒一次的对账
-        system.onFocusChange = { [weak self] in MainActor.assumeIsolated { self?.checkStageFocus() } }
+        // 焦点一变（关了窗口、切了 App）就顺手对一次账：关窗后格子能马上补位，平时的对账就可以放慢
+        system.onFocusChange = { [weak self] in MainActor.assumeIsolated { self?.checkStageFocus(); self?.reconcileSoon = true } }
         if activationObserver == nil {
             activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
                 guard let model = self else { return }
                 // App 激活后它的焦点窗口要过一小会儿才稳定
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak model] in
-                    MainActor.assumeIsolated { if model?.missionControlPause() == false { model?.checkStageFocus() } }
+                    MainActor.assumeIsolated { if model?.missionControlPause() == false { model?.checkStageFocus(); model?.reconcileSoon = true } }
                 }
             }
         }
@@ -478,11 +479,20 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, !self.missionControlPause() else { return }
                 n += 1
-                self.checkStageFocus()
-                if self.stage.settle() { self.stageChanged(); self.syncScenes() }
-                if n % 6 == 0 {
+                // 鼠标按着、刚松开 2 秒内：每 0.35 秒看一次（拖窗口归位要跟手）；平时放慢：
+                // 焦点变化有系统通知即时处理，这里约 1 秒兜底一次；App 自己跑偏约 1.4 秒内归位
+                let down = CGEventSource.buttonState(.combinedSessionState, button: .left)
+                if down { self.lastMouseDown = Date() }
+                let busy = down || Date().timeIntervalSince(self.lastMouseDown) < 2
+                if busy || n % 3 == 0 { self.checkStageFocus() }
+                if (busy || n % 4 == 0) && self.stage.settle() { self.stageChanged(); self.syncScenes() }
+                // 全量对账要逐个问所有窗口，比较贵：有动静时约 2 秒一次，空闲时约 4 秒一次，焦点变化后立刻补一次
+                if self.reconcileSoon || n % (busy ? 6 : 12) == 0 {
+                    self.reconcileSoon = false
+                    // 对账：真有窗口进出格子 / 藏起放回才通知界面（以前每 2 秒无条件刷新一遍，开着工作台时空闲也占 20% CPU）
+                    let before = (self.stage.stages, self.stash.entries)
                     self.stage.reconcile(mru: self.habits.mru)
-                    self.stageChanged()
+                    if self.stage.stages != before.0 || self.stash.entries != before.1 { self.stageChanged() }
                 }
             }
         }
@@ -506,6 +516,8 @@ final class AppModel: ObservableObject {
     }
 
     private var activationObserver: NSObjectProtocol?
+    private var lastMouseDown = Date.distantPast
+    private var reconcileSoon = false
     private var lastStuckCheck = Date.distantPast
 
     private func checkStageFocus() {
@@ -537,7 +549,7 @@ final class AppModel: ObservableObject {
     }
 
     func stageChanged() {
-        stashed = stash.entries
+        if stashed != stash.entries { stashed = stash.entries }
         stageRevision += 1
         onStageRevision()
     }
