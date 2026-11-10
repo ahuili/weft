@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.onPickSlot = { [weak self] u, slot in
             guard let self else { return }
             self.hub.hide(); self.shelf.hide()
+            if slot == -1 { self.deck.closePicker(); return }
             // 等窗口排好再弹（格子位置要用新的）
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.deck.showPicker(display: u, slot: slot) }
         }
@@ -317,7 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 model.refresh(captureThumbs: false)
                 if let w = model.window(id) { model.pinSlot(n, window: w) }
             }
-        case "hide": hub.hide(); scenes.hide(); shelf.stayOpen = false; shelf.hide(); deck.hideLayoutPicker(); deck.closePicker(); for w in NSApp.windows where w.title.contains("Weft") && w.isVisible { w.close() }
+        case "hide": quick.debugClose(); hub.hide(); scenes.hide(); shelf.stayOpen = false; shelf.hide(); deck.hideLayoutPicker(); deck.closePicker(); for w in NSApp.windows where w.title.contains("Weft") && w.isVisible { w.close() }
         case "snap":
             // snap <out.png>：截 Weft 自己最大的那个可见面板（调试用）；snap-screen <屏幕序号 1..> <out.png>：截整块屏
             guard a.count >= 2 else { return }
@@ -403,6 +404,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "minimize": if a.count > 1, let id = UInt32(a[1]) { model.system.setMinimized(id, a.count > 2 ? a[2] != "0" : true) }
         case "focuswin": if a.count > 1, let id = UInt32(a[1]) { model.system.focus(id) }
         case "scenes": scenes.show()
+        case "flow": quick.debugFlow()
+        case "newdesk": model.newDesk(on: nil)
         case "studio": studio.show(select: a.count > 1 ? model.scenes.dropFirst((Int(a[1]) ?? 1) - 1).first?.id : nil)
         case "scenekey": scenes.toggleOrNext()
         case "peek": scenes.peek(a.count > 1 ? (Int(a[1]) ?? 1) : 1, display: nil)

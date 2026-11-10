@@ -843,6 +843,47 @@ do {
     check(sm.isStashed(16) && !st.companions.contains(16), "App 下台后附属窗口跟着退到后台")
 }
 
+// MARK: - 拖去另一块屏：原来那块屏收紧、通知场景层；空桌面
+do {
+    let f9 = FakeWindows(sampleWindows(both), both)
+    let sm9 = StashManager(actions: f9, store: Store(dir: tmp.appendingPathComponent("stage9move")))
+    let st9 = StageManager(actions: f9, stash: sm9); st9.verifyDelay = 0; st9.promoteDelay = 0; st9.settleDelay = 0
+    let w = { (id: UInt32) in f9.wins.first { $0.id == id }! }
+    st9.applySlots([("LAPTOP", StageSpec(.split), [41, 21]), ("DELL", StageSpec(.focus), [11])])
+    var moved: [(UInt32, String)] = []
+    st9.onMovedAway = { id, from in moved.append((id, from)) }
+    let p = st9.slotFrames("DELL")[0].center
+    if let pl = st9.planInsert(41, display: "DELL", at: p) {
+        check(st9.insert(w(41), plan: pl), "拖去另一块屏：插进去")
+        let lap = st9.stages["LAPTOP"]!
+        check(lap.spec.layout == .focus && lap.slots == [21] && lap.emptySlots.isEmpty, "原来那块屏少了一个：左右收紧成专注，不留空格子 \(lap)")
+        check(moved.count == 1 && moved[0].0 == 41 && moved[0].1 == "LAPTOP", "通知场景层：41 从笔记本被拖走了 \(moved)")
+        check(w(21).frame == st9.slotFrames("LAPTOP")[0], "剩下的窗口铺满")
+    } else { check(false, "拖去另一块屏：应该能插入") }
+    // 最后一个也拖走：整块屏空了，舞台留着一个空格子（界面层再决定摆回哪个场景）
+    if let pl = st9.planInsert(21, display: "DELL", at: st9.slotFrames("DELL")[0].center) {
+        st9.insert(w(21), plan: pl)
+        check(st9.stages["LAPTOP"]?.windows.isEmpty == true && moved.count == 2, "最后一个也拖走：这块屏空了 \(String(describing: st9.stages["LAPTOP"]))")
+    }
+    // 同一块屏里换位、叠放：不算拖走
+    moved = []
+    let d = st9.stages["DELL"]!
+    if let a = d.slots[0] { st9.stackOnto(w(a), display: "DELL", slot: 1) }
+    check(moved.isEmpty, "同一块屏里叠：不算拖走")
+    // 故意留着空格子的版式：拖走一个不收紧
+    st9.applySlots([("LAPTOP", StageSpec(.triple), [41, nil, 21])])
+    st9.applySlots([("DELL", StageSpec(.focus), [11])])
+    if let pl = st9.planInsert(41, display: "DELL", at: st9.slotFrames("DELL")[0].center) {
+        st9.insert(w(41), plan: pl)
+        check(st9.stages["LAPTOP"]?.spec.layout == .triple, "原来就有空格子的版式：拖走一个不动版式")
+    }
+    // 空桌面
+    st9.clearAll(display: "DELL")
+    let e = st9.stages["DELL"]!
+    check(e.windows.isEmpty && e.spec.layout == .focus && e.slots.count == 1 && !st9.isOnStage(11) && sm9.isStashed(11), "空桌面：台上的都退到后台，留一个空格子 \(e)")
+    check(st9.present(w(12), on: "DELL", slot: 0) && st9.stages["DELL"]?.slots == [12], "空桌面里放进第一个窗口")
+}
+
 // MARK: - 叠放
 do {
     let f8 = FakeWindows(sampleWindows(solo), solo)

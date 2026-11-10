@@ -12,17 +12,20 @@ import WeftCore
 enum SceneItem: Identifiable, Equatable {
     case scene(WorkContext)
     case combo(SceneCombo)
+    /// 空桌面：这块屏清空，马上挑窗口放进来
+    case blank
     case add
 
     var id: String {
         switch self {
         case .scene(let c): return c.id
         case .combo(let c): return "combo-" + c.id
+        case .blank: return "blank"
         case .add: return "add"
         }
     }
     var objectID: String? {
-        switch self { case .scene(let c): return c.id; case .combo(let c): return c.id; case .add: return nil }
+        switch self { case .scene(let c): return c.id; case .combo(let c): return c.id; case .blank, .add: return nil }
     }
 }
 
@@ -63,13 +66,16 @@ final class SceneSwitcher {
         let keep = state.selected?.id
         var items: [SceneItem] = []
         // 只列这块屏自己的场景（加上所属的屏没接、临时借住的）：在哪块屏切，就不会切出别的屏的窗口
-        let mine = model.switcherScenes(for: state.display)
+        let mine = model.switcherScenes(for: state.display).filter { !model.isBlank($0.id) }
         if state.hud {
             // 一个窗口都摆不出来的场景（窗口全关了 / 都在别的桌面上）不进来
             items = mine.filter { c in model.sceneSlots(c).contains { $0.window?.axAvailable == true } }.map { .scene($0) }
+            // 最后一张永远是空桌面：⌃→ 走到头就是开一张新的（和调度中心最右边的 ＋ 一个意思）
+            items.append(.blank)
         } else {
             if model.profile.displays.count > 1 { items += model.combos.map { .combo($0) } }
             items += mine.filter { !model.sceneDormant($0) }.map { .scene($0) }
+            items.append(.blank)
             items.append(.add)
         }
         state.items = items
@@ -92,7 +98,7 @@ final class SceneSwitcher {
         // 默认停在「这块屏现在摆着的场景」的下一个：按一下回车就是换一个
         if let cur = state.items.firstIndex(where: { if case .scene(let c) = $0 { return model.sceneShowing(c) == target }; return false }) {
             state.index = min(cur + 1, state.items.count - 1)
-            if case .add = state.items[state.index] { state.index = cur }
+            if case .scene = state.items[state.index] {} else { state.index = cur }
         }
         present(key: true)
     }
@@ -301,6 +307,9 @@ final class SceneSwitcher {
         case .combo(let c):
             hide()
             model.applyCombo(c)
+        case .blank:
+            hide()
+            model.newDesk(on: u)
         case .add:
             hide()
             openStudio(nil, true)
@@ -357,6 +366,10 @@ final class SceneSwitcher {
             if case .scene(let c) = state.selected { model.updateScene(c, from: state.display); rebuild() }
         case "n":
             if model.saveScene(from: state.display) != nil { rebuild(); state.index = max(0, state.items.count - 2) }
+        case "d":
+            let u = state.display
+            hide()
+            model.newDesk(on: u)
         case "c":
             model.saveComboFromScreens(); rebuild()
         case "m":
@@ -455,13 +468,15 @@ struct SceneSwitcherView: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 case .combo(let c):
                     Text("组合 · \(c.parts.count) 块屏一起摆，回到各自上次的屏").font(.system(size: 11)).foregroundStyle(.secondary)
+                case .blank:
+                    Text("这块屏清空（现在的场景原样留着），马上挑一个窗口放进来 · 什么都没放就切走，它自己消失").font(.system(size: 11)).foregroundStyle(.secondary)
                 case .add:
                     Text("在场景工作台里拖窗口进格子，建一个新场景").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
             if state.confirmDelete { Text("再按一次 ⌫ 删除").font(.system(size: 11, weight: .bold)).foregroundStyle(.red) }
             Spacer()
-            if state.hud || model.profile.displays.count < 2 { Text(state.hud ? "按着 ⌃ 再按 ← → 选 · ⌃Tab 换屏 · 松开 ⌃ 就摆出来（没挪过就留着卡片）· Esc 不换" : "← → / 两指滑 选 · ↩ 摆出来 · 数字直达 · Tab 换屏 · M 换到另一块屏").font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1) }
+            if state.hud || model.profile.displays.count < 2 { Text(state.hud ? "按着 ⌃ 再按 ← → 选（最右边是空桌面）· ⌃Tab 换屏 · 松开 ⌃ 就摆出来 · Esc 不换" : "← → / 两指滑 选 · ↩ 摆出来 · 数字直达 · D 空桌面 · Tab 换屏").font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1) }
             if !state.hud, model.profile.displays.count > 1, case .scene = state.selected {
                 Button { move() } label: { Label("换到另一块屏", systemImage: "arrow.left.arrow.right").font(.system(size: 11, weight: .medium)).fixedSize() }
                     .buttonStyle(.bordered).controlSize(.small).help("这个场景以后归另一块屏（M）")
@@ -543,6 +558,7 @@ struct SceneCardView: View {
         switch item {
         case .scene(let c): return "\(c.emoji) \(c.name)" + (model.linkGroup(of: c.id) != nil ? " 🔗" : "")
         case .combo(let c): return "\(c.emoji) \(c.name)"
+        case .blank: return "🫙 空桌面"
         case .add: return "＋ 新场景"
         }
     }
@@ -572,6 +588,14 @@ struct SceneCardView: View {
             }
             .frame(width: SceneSwitcherView.cardW, height: h)
             .background(Color.black.opacity(0.35))
+        case .blank:
+            ZStack {
+                RoundedRectangle(cornerRadius: 14).fill(LinearGradient(colors: [Color.purple.opacity(0.22), Color.blue.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                VStack(spacing: 6) {
+                    Image(systemName: "macwindow.badge.plus").font(.system(size: 26, weight: .light))
+                    Text("空桌面\n清空这块屏，拉一个窗口过来").font(.system(size: 11)).multilineTextAlignment(.center)
+                }.foregroundStyle(.white.opacity(0.85))
+            }
         case .add:
             ZStack {
                 RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.04))

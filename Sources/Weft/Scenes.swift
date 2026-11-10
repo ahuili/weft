@@ -310,6 +310,7 @@ extension AppModel {
     }
 
     func markShowing(_ id: String, on u: String) {
+        if let old = showingScene[u], old != id { dropIfBlank(old) }
         for (k, v) in showingScene where v == id && k != u { showingScene[k] = nil }
         showingScene[u] = id
         sceneUsedAt[id] = Date()
@@ -320,6 +321,8 @@ extension AppModel {
     /// 你在某块屏上调整了窗口（换窗口、换版式、拉比例、拖动换位）：自动存进这块屏正摆着的场景，不用另外「保存」
     func syncScenes() {
         var changed = false
+        // 拖走的窗口又回到原来那块屏了：不算拖走
+        for (id, u) in handMoved where stage.locate(id)?.display == u || stage.stackLocate(id)?.display == u { handMoved[id] = nil }
         for (u, id) in showingScene {
             guard let i = contexts.firstIndex(where: { $0.id == id }), let st = stage.stage(for: u), var pl = currentPlacement(u) else { continue }
             let old = contexts[i].plan?.first
@@ -348,10 +351,111 @@ extension AppModel {
                 contexts[i].members = pl.members.filter { !$0.bundleID.isEmpty }
                 // 你往里加了第二个窗口：是你自己搭的场景了，不再跟着 App 退出收掉（只换版式 / 比例不算）
                 if contexts[i].members.count >= 2 { contexts[i].autoSolo = nil }
+                // 空桌面里放进了第一个窗口：名字跟着它叫
+                else if contexts[i].autoSolo == true, contexts[i].name == Self.blankName, let w = st.windows.first.flatMap({ window($0) }) {
+                    contexts[i].name = soloName(w); contexts[i].emoji = "🪟"
+                }
                 changed = true
             }
         }
         if changed { saveContexts() }
+        settleMovedAway()
+    }
+
+    /// 你把窗口亲手拖去了另一块屏之后的收尾：
+    /// - 只装着它的自动场景没用了，删掉（不然在原来那块屏点它，窗口又被拉回来）
+    /// - 原来那块屏整个空了：它正摆着的场景里拿掉这个窗口，然后摆回这块屏最近用过的场景（没有就留一张空桌面）
+    func settleMovedAway() {
+        guard !pendingLeft.isEmpty else { return }
+        let list = pendingLeft
+        pendingLeft = []
+        var changed = false
+        for (id, from) in list {
+            if stage.locate(id)?.display == from || stage.stackLocate(id)?.display == from { continue }
+            let now = stage.locate(id)?.display ?? stage.stackLocate(id)?.display
+            func holds(_ c: WorkContext) -> Bool {
+                c.members.contains { $0.lastWindowID == id } || sceneSlots(c).contains { $0.window?.id == id }
+            }
+            let solos = contexts.filter { c in
+                c.autoSolo == true && c.members.count == 1 && holds(c) && (showingOn(c.id) == nil || showingOn(c.id) == from)
+            }.map(\.id)
+            var back: String?
+            for sid in solos {
+                back = back ?? soloReturn.removeValue(forKey: sid)
+                for (k, v) in showingScene where v == sid { showingScene[k] = nil }
+                sceneUsedAt[sid] = nil
+            }
+            if !solos.isEmpty { contexts.removeAll { solos.contains($0.id) }; changed = true }
+            guard stageActive, stage.stage(for: from)?.windows.isEmpty != false else { continue }
+            // 整块屏空了
+            if let sid = showingScene[from], let i = contexts.firstIndex(where: { $0.id == sid }), var pl = contexts[i].plan?.first {
+                let slots = sceneSlots(contexts[i])
+                for j in pl.members.indices where pl.members[j].lastWindowID == id || (j < slots.count && slots[j].window?.id == id) {
+                    pl.members[j] = WorkContext.Member(bundleID: "", title: "")
+                }
+                while pl.members.last?.bundleID.isEmpty == true { pl.members.removeLast() }
+                contexts[i].plan = [pl]
+                contexts[i].members = pl.members.filter { !$0.bundleID.isEmpty }
+                changed = true
+            }
+            showingScene[from] = nil
+            let cands = scenes.filter { c in
+                guard belongs(c, to: from), showingOn(c.id) == nil else { return false }
+                let ws = sceneSlots(c).compactMap(\.window).filter(\.axAvailable)
+                // 不抢别的屏正摆着的窗口，也不把刚拖走的那个拉回来
+                return !ws.isEmpty && !ws.contains { $0.id == id || stage.isOnStage($0.id) }
+            }.sorted { (sceneUsedAt[$0.id] ?? .distantPast) > (sceneUsedAt[$1.id] ?? .distantPast) }
+            let pick = cands.first { $0.id == back } ?? cands.first { sceneUsedAt[$0.id] != nil }
+            if let pick, applyScene(pick, on: from) {
+                stageLog.append(AppModel.clock.string(from: Date()) + " 窗口拖去了另一块屏，这块屏摆回「\(pick.name)」")
+                // 键盘还是跟着你刚拖过去的那个窗口
+                if let now { stage.focus(display: now) }
+                system.focus(id)
+            }
+        }
+        if changed { saveContexts(); stageChanged() }
+    }
+
+    // MARK: 空桌面
+
+    static let blankName = "空桌面"
+
+    /// 还空着的空桌面（你新建了、还没放窗口）
+    func isBlank(_ id: String) -> Bool {
+        contexts.first { $0.id == id }.map { $0.autoSolo == true && $0.members.isEmpty } ?? false
+    }
+
+    /// 离开一张还空着的空桌面：它没有内容，直接收掉
+    func dropIfBlank(_ id: String) {
+        guard isBlank(id) else { return }
+        contexts.removeAll { $0.id == id }
+        sceneUsedAt[id] = nil
+    }
+
+    /// 在这块屏上开一张空桌面：台上的窗口退到后台（原来的场景原样留着），马上弹出挑窗口的面板。
+    /// 放进第一个窗口它就成了一个场景；什么都没放就切走，它自己消失
+    func newDesk(on display: String? = nil) {
+        guard Permissions.accessibility else { Toast.show("需要先授予辅助功能权限"); return }
+        if !stageActive { enterStage() }
+        guard stageActive, let u = display ?? stage.currentDisplay() ?? profile.main?.uuid, profile.display(uuid: u) != nil else { return }
+        if let cur = showingScene[u], isBlank(cur), stage.stage(for: u)?.windows.isEmpty != false { onPickSlot(u, 0); return }
+        syncScenes()
+        var c = WorkContext(name: Self.blankName, emoji: "🫙", color: contexts.count, members: [])
+        let idx = profile.displays.firstIndex { $0.uuid == u } ?? 0
+        c.plan = [ScenePlacement(displayUUID: u, displayIndex: idx, spec: StageSpec(.focus), members: [])]
+        c.home = role(of: u)
+        c.autoSolo = true
+        contexts.append(c)
+        let prev = showingScene[u]
+        if let prev { dropIfBlank(prev); soloReturn[c.id] = prev }
+        // 先换成新场景再清屏：不然原来的场景会被当成「你把窗口都请走了」
+        showingScene[u] = c.id
+        sceneUsedAt[c.id] = Date()
+        stage.clearAll(display: u)
+        saveContexts()
+        stageChanged()
+        Toast.show("🫙 空桌面 · 挑一个窗口放进来，或者直接点 Dock 里的 App", seconds: 2)
+        onPickSlot(u, 0)
     }
 
     /// 场景这一格原来的窗口现在不在台上：是你请走的（还开着、没最小化、也没上别的屏），还是只是暂时不在
@@ -364,6 +468,7 @@ extension AppModel {
         }
         if !w.axAvailable || w.isMinimized { return true }     // 在别的系统桌面 / 最小化了
         if w.pid > 0, NSRunningApplication(processIdentifier: w.pid)?.isHidden == true { return true }
+        if handMoved[w.id] == u { return false }                     // 你亲手把它拖去了另一块屏
         if let loc = stage.locate(w.id) { return loc.display != u }   // 被另一块屏借走了；还在这块屏 = 你挪了格子
         return false
     }
@@ -386,6 +491,15 @@ extension AppModel {
         guard stageActive, stage.stageable(w) else { return false }
         let here = stage.currentDisplay() ?? profile.main?.uuid ?? ""
         let fromDock = clickedDock()
+        // 这块屏是一张空桌面：你就是来拉窗口的，直接放进来（不跳去它原来的场景）
+        if let sid = showingScene[here], isBlank(sid), stage.stage(for: here)?.windows.isEmpty != false {
+            onPickSlot(here, -1)
+            stage.present(w, on: here, slot: 0)
+            stageChanged()
+            syncScenes()
+            system.focus(w.id)
+            return true
+        }
         if let sc = bestScene(containing: w) {
             // 场景正摆在某块屏上就去那块屏；不然回到它所属的那块屏（大屏的场景不会被挤到笔记本上）；那块屏没接才摆在你正在用的屏
             let u = showingOn(sc.id) ?? homeDisplay(sc) ?? here
@@ -438,12 +552,20 @@ extension AppModel {
     }
 
     /// 选了「放进刚才那个场景的第 slot 块」（nil = 多加一格）：回到刚才的场景，这一块换成它；刚才自动开的单独场景删掉
-    func acceptPlacement(_ o: PlacementOffer, slot: Int?) {
+    func acceptPlacement(_ o: PlacementOffer, slot: Int?, stack: Bool = false) {
         refresh(captureThumbs: false)
         guard let w = window(o.window.id) else { return }
         var slots = o.previous.slots
         var spec = o.previous.spec
+        var stacks = o.previous.stacks
         if let slot, slots.indices.contains(slot) {
+            // 叠上去：它在最上面，原来那个（连同它下面压着的）压到下面；换进去：只换最上面那个，下面压着的不动
+            if let old = slots[slot] {
+                var pile = stacks.removeValue(forKey: old) ?? []
+                if stack { pile.append(old) }
+                pile.removeAll { $0 == w.id }
+                if !pile.isEmpty { stacks[w.id] = Array(pile.suffix(DisplayStage.maxStack - 1)) }
+            }
             slots[slot] = w.id
         } else {
             let next: StageLayout = switch spec.layout {
@@ -458,7 +580,7 @@ extension AppModel {
         }
         contexts.removeAll { $0.id == o.soloScene }
         showingScene[o.display] = nil
-        stage.applySlots([(o.display, spec, slots)])
+        stage.applySlots([(o.display, spec, slots, stacks)])
         if let id = o.previousScene { showingScene[o.display] = id; sceneUsedAt[id] = Date() }
         stageChanged()
         system.focus(w.id)
@@ -471,7 +593,7 @@ extension AppModel {
         contexts.removeAll { $0.id == o.soloScene }
         showingScene[o.display] = nil
         setFloating(o.window.bundleID, true, quiet: true)
-        stage.applySlots([(o.display, o.previous.spec, o.previous.slots)])
+        stage.applySlots([(o.display, o.previous.spec, o.previous.slots, o.previous.stacks)])
         if let id = o.previousScene { showingScene[o.display] = id; sceneUsedAt[id] = Date() }
         stageChanged()
         system.focus(o.window.id)
@@ -533,6 +655,7 @@ extension AppModel {
         guard !live.isEmpty else { return }
         var gone: [WorkContext] = []
         for c in autos {
+            if c.members.isEmpty { continue }   // 空桌面：切走时才收
             if let t = sceneUsedAt[c.id], Date().timeIntervalSince(t) < 4 { continue }   // 刚开的：窗口可能还没冒出来
             guard ContextResolver.resolve(c.members, in: live).isEmpty else { continue }
             let dead = c.members.allSatisfy { m in
@@ -595,12 +718,60 @@ extension AppModel {
             guard var pl = c.plan?.first else { return }
             let empty = WorkContext.Member(bundleID: "", title: "")
             while pl.members.count <= slot { pl.members.append(empty) }
-            if let w { for j in pl.members.indices where pl.members[j].lastWindowID == w.id { pl.members[j] = empty } }
-            pl.members[slot] = w.map(ContextResolver.member) ?? empty
-            while pl.members.last?.bundleID.isEmpty == true { pl.members.removeLast() }
+            var st = pl.stacks ?? []
+            while st.count < pl.members.count { st.append([]) }
+            if let w {
+                for j in st.indices { st[j].removeAll { $0.lastWindowID == w.id } }
+                for j in pl.members.indices where pl.members[j].lastWindowID == w.id { pl.members[j] = j == slot ? empty : (st[j].popLast() ?? empty) }
+                pl.members[slot] = ContextResolver.member(w)
+            } else {
+                // 把最上面那个拿掉：下面压着的顶上来
+                pl.members[slot] = st[slot].popLast() ?? empty
+            }
+            while pl.members.last?.bundleID.isEmpty == true, st.count < pl.members.count || st[pl.members.count - 1].isEmpty { pl.members.removeLast() }
+            pl.stacks = st.contains { !$0.isEmpty } ? Array(st.prefix(pl.members.count)) : nil
             c.plan = [pl]
             c.members = pl.members.filter { !$0.bundleID.isEmpty }
         }
+    }
+
+    /// 把窗口叠到第 slot 格上：它在最上面，原来那个压到下面（一摞最多 \(DisplayStage.maxStack) 个）。格子空着就是普通地放进去
+    func stackSceneSlot(_ id: String, _ slot: Int, _ w: WindowInfo) {
+        editScene(id) { c in
+            guard var pl = c.plan?.first else { return }
+            let empty = WorkContext.Member(bundleID: "", title: "")
+            while pl.members.count <= slot { pl.members.append(empty) }
+            var st = pl.stacks ?? []
+            while st.count < pl.members.count { st.append([]) }
+            // 它原来在别处（别的格子 / 别的一摞里）：先拿出来，那一格下面压着的顶上来
+            for j in st.indices { st[j].removeAll { $0.lastWindowID == w.id } }
+            for j in pl.members.indices where j != slot && pl.members[j].lastWindowID == w.id {
+                pl.members[j] = st[j].popLast() ?? empty
+            }
+            let old = pl.members[slot]
+            if !old.bundleID.isEmpty, old.lastWindowID != w.id { st[slot].append(old) }
+            st[slot] = Array(st[slot].suffix(DisplayStage.maxStack - 1))
+            pl.members[slot] = ContextResolver.member(w)
+            pl.stacks = st.contains { !$0.isEmpty } ? st : nil
+            c.plan = [pl]
+            c.members = pl.members.filter { !$0.bundleID.isEmpty }
+        }
+    }
+
+    /// 把第 slot 格下面压着的第 k 个（从最底下数）拿掉
+    func unstackSceneSlot(_ id: String, _ slot: Int, _ k: Int) {
+        editScene(id) { c in
+            guard var pl = c.plan?.first, var st = pl.stacks, st.indices.contains(slot), st[slot].indices.contains(k) else { return }
+            st[slot].remove(at: k)
+            pl.stacks = st.contains { !$0.isEmpty } ? st : nil
+            c.plan = [pl]
+        }
+    }
+
+    /// 场景第 slot 格下面压着的窗口（从最底下开始；找不到的窗口 = 已关闭）
+    func sceneStack(_ c: WorkContext, _ slot: Int) -> [(member: WorkContext.Member, window: WindowInfo?)] {
+        guard let st = c.plan?.first?.stacks, st.indices.contains(slot) else { return [] }
+        return st[slot].map { m in (m, ContextResolver.resolve([m], in: windows).first) }
     }
 
     func setSceneLayout(_ id: String, _ layout: StageLayout) {

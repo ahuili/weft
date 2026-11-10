@@ -15,6 +15,8 @@ final class StudioState: ObservableObject {
     @Published var previewDisplay: String?
     /// 正在给第几格挑窗口（工作台里盖一层挑选面板）
     @Published var pickSlot: Int?
+    /// 这次挑的窗口是叠上去（不是换掉）
+    @Published var pickStack = false
 }
 
 @MainActor
@@ -150,14 +152,16 @@ struct StudioView: View {
                     .onTapGesture { state.pickSlot = nil }
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("放进「\(c.emoji) \(c.name)」的第 \(i + 1) 格").font(.system(size: 14, weight: .bold))
+                        Text(state.pickStack ? "叠到「\(c.emoji) \(c.name)」第 \(i + 1) 格的上面" : "放进「\(c.emoji) \(c.name)」的第 \(i + 1) 格").font(.system(size: 14, weight: .bold))
                         Spacer()
                         Button { state.pickSlot = nil } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 16)) }
                             .buttonStyle(.plain).foregroundStyle(.secondary).keyboardShortcut(.cancelAction)
                     }
                     WindowPickList(model: model) { w in
                         state.pickSlot = nil
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { model.setSceneSlot(c.id, i, w) }
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            if state.pickStack { model.stackSceneSlot(c.id, i, w) } else { model.setSceneSlot(c.id, i, w) }
+                        }
                     }
                 }
                 .padding(14)
@@ -336,7 +340,8 @@ struct StudioView: View {
                     let d = model.homeDisplay(c).flatMap { model.profile.display(uuid: $0) } ?? state.previewDisplay.flatMap { model.profile.display(uuid: $0) } ?? model.profile.main
                     let aspect = d.map { $0.visible.width / max($0.visible.height, 1) } ?? 1.6
                     let w = min(g.size.width, g.size.height * aspect), h = w / aspect
-                    SceneCanvas(model: model, scene: c, size: CGSize(width: w, height: h), onPick: { state.pickSlot = $0 })
+                    SceneCanvas(model: model, scene: c, size: CGSize(width: w, height: h), onPick: { state.pickStack = false; state.pickSlot = $0 },
+                                onStack: { state.pickStack = true; state.pickSlot = $0 })
                         .frame(width: g.size.width, height: g.size.height)
                 }
                 HStack(spacing: 8) {
@@ -344,7 +349,7 @@ struct StudioView: View {
                         Label("正摆在\(model.profile.display(uuid: on).map { $0.isBuiltin ? "笔记本" : $0.name } ?? "")上 · 这里改了屏幕立刻跟着变", systemImage: "dot.radiowaves.left.and.right")
                             .font(.system(size: 11)).foregroundStyle(.green)
                     } else {
-                        Text("从右边把窗口拖进格子；点一格也能挑").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("从右边把窗口拖进格子；点一格也能挑 · 拖到格子底下那一条上 = 叠上去").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     // 摆到它自己的屏；所属的屏没接时可以临时摆到别的屏（不改归属，插回来自动回去）
@@ -442,6 +447,7 @@ struct SceneCanvas: View {
     let scene: WorkContext
     let size: CGSize
     var onPick: (Int) -> Void = { _ in }
+    var onStack: (Int) -> Void = { _ in }
 
     var body: some View {
         let spec = scene.plan?.first?.spec ?? StageSpec(.focus)
@@ -452,7 +458,8 @@ struct SceneCanvas: View {
             RoundedRectangle(cornerRadius: 16).fill(LinearGradient(colors: [Color(white: 0.16), Color(white: 0.08)], startPoint: .top, endPoint: .bottom))
             ForEach(Array(frames.enumerated()), id: \.offset) { i, f in
                 SlotCell(model: model, sceneID: scene.id, index: i, slot: i < slots.count ? slots[i] : nil,
-                         size: CGSize(width: f.width / k, height: f.height / k), onPick: { onPick(i) })
+                         size: CGSize(width: f.width / k, height: f.height / k), under: model.sceneStack(scene, i),
+                         onPick: { onPick(i) }, onStack: { onStack(i) })
                     .offset(x: f.minX / k, y: f.minY / k)
             }
         }
@@ -467,9 +474,46 @@ struct SlotCell: View {
     let index: Int
     let slot: AppModel.SceneSlot?
     let size: CGSize
+    /// 这一格下面压着的（从最底下开始）
+    var under: [(member: WorkContext.Member, window: WindowInfo?)] = []
     var onPick: () -> Void = {}
+    var onStack: () -> Void = {}
     @State private var targeted = false
     @State private var hover = false
+    @State private var stackTargeted = false
+
+    /// 格子底下的一条：压在下面的窗口（点一下拿掉），和「叠一个」。把窗口拖到这一条上 = 叠上去；拖到格子别处 = 换掉
+    var stackStrip: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "square.stack.3d.up.fill").font(.system(size: 10))
+            ForEach(Array(under.enumerated()), id: \.offset) { k, it in
+                Button { model.unstackSceneSlot(sceneID, index, k) } label: {
+                    Group {
+                        if let w = it.window { Image(nsImage: appIcon(w.pid)).resizable() }
+                        else { Image(systemName: "questionmark.app.dashed").resizable().foregroundStyle(.secondary) }
+                    }.frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("压在下面：\(it.window.map { $0.title.isEmpty ? $0.appName : $0.title } ?? "「\(it.member.title)」已关闭") · 点一下拿掉")
+            }
+            if under.count < DisplayStage.maxStack - 1 {
+                Button { onStack() } label: {
+                    Text(stackTargeted ? "松手叠上去" : under.isEmpty ? "＋ 叠一个" : "＋").font(.system(size: 10, weight: .semibold))
+                }.buttonStyle(.plain).help("再叠一个窗口到这一格：它在最上面，现在这个压到下面。也可以把右边的窗口直接拖到这一条上")
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Capsule().fill(stackTargeted ? Color.purple : Color.black.opacity(0.6)))
+        .overlay(Capsule().strokeBorder(stackTargeted ? Color.white : Color.white.opacity(0.25), lineWidth: 1))
+        .contentShape(Capsule())
+        .dropDestination(for: String.self) { items, _ in
+            guard let s = items.first, let id = UInt32(s), let w = model.window(id) else { return false }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { model.stackSceneSlot(sceneID, index, w) }
+            return true
+        } isTargeted: { stackTargeted = $0 }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom).padding(8)
+    }
 
     var body: some View {
         let w = slot?.window
@@ -502,8 +546,9 @@ struct SlotCell: View {
                 Button { model.setSceneSlot(sceneID, index, nil) } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 18)) }
                     .buttonStyle(.plain).foregroundStyle(.white.opacity(0.85))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(8)
-                    .help("这一格空出来")
+                    .help(under.isEmpty ? "这一格空出来" : "拿掉最上面这个，下面压着的顶上来")
             }
+            if w != nil, size.width >= 150, size.height >= 110 { stackStrip }
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 10))

@@ -31,6 +31,7 @@ final class PlacementChooser {
         p.contentView = FirstClickHostingView(rootView: ChooserView(
             model: model, state: state,
             pick: { [weak self] slot in self?.choose(slot) },
+            stack: { [weak self] slot in self?.choose(slot, stack: true) },
             keep: { [weak self] in self?.hide(keep: true) },
             float: { [weak self] in self?.floatIt() },
             move: { [weak self] u in self?.move(u) },
@@ -66,10 +67,12 @@ final class PlacementChooser {
 
     func debugChoose(_ slot: Int?) { choose(slot) }
 
-    private func choose(_ slot: Int?) {
+    func debugStack(_ slot: Int) { choose(slot, stack: true) }
+
+    private func choose(_ slot: Int?, stack: Bool = false) {
         guard let o = offer else { return }
         hide(keep: false)
-        model.acceptPlacement(o, slot: slot)
+        model.acceptPlacement(o, slot: slot, stack: stack)
     }
 
     /// 「以后随手」：这个 App 不进场景，刚才的场景原样回来，它浮在上面
@@ -137,6 +140,7 @@ struct ChooserView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var state: ChooserState
     var pick: (Int?) -> Void
+    var stack: (Int) -> Void = { _ in }
     var keep: () -> Void
     var float: () -> Void
     var move: (String) -> Void = { _ in }
@@ -150,7 +154,7 @@ struct ChooserView: View {
                     Image(nsImage: appIcon(o.window.pid)).resizable().frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("「\(o.window.appName)」单独开了一个新场景").font(.system(size: 13, weight: .bold))
-                        Text(o.previous.windows.isEmpty ? "从 Dock 打开的：想放到哪块屏，点一下" : o.askScreen ? "点一块屏挪过去，或者点\(prevName)的一块换进去" : "要放进\(prevName)吗？点一块，它就换进那里")
+                        Text(o.previous.windows.isEmpty ? "从 Dock 打开的：想放到哪块屏，点一下" : o.askScreen ? "点一块屏挪过去，或者放进\(prevName)：换掉一块，或叠在它上面" : "要放进\(prevName)吗？鼠标移到一块上：换掉它，或者叠在它上面")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -175,7 +179,7 @@ struct ChooserView: View {
                 }
                 HStack(alignment: .center, spacing: 12) {
                     if !o.previous.windows.isEmpty {
-                        MiniStage(model: model, offer: o, pick: pick, hover: hover)
+                        MiniStage(model: model, offer: o, pick: pick, stack: stack, hover: hover)
                         if o.previous.spec.layout.slots < 4 {
                             AddCellCard(offer: o, pick: pick, hover: hover)
                         }
@@ -201,8 +205,18 @@ struct MiniStage: View {
     @ObservedObject var model: AppModel
     let offer: PlacementOffer
     var pick: (Int?) -> Void
+    var stack: (Int) -> Void = { _ in }
     var hover: (Int?) -> Void
     @State private var over: Int?
+    /// 鼠标在「叠上去」那一半上
+    @State private var overStack = false
+
+    /// 这一格有窗口、够大，才能叠
+    func stackable(_ i: Int) -> Bool {
+        guard offer.previous.slots.indices.contains(i), offer.previous.slots[i] != nil, offer.previous.depth(i) < DisplayStage.maxStack - 1 else { return false }
+        let fr = model.stage.frames(for: DisplayStage(spec: offer.previous.spec, slots: offer.previous.slots), display: offer.display)
+        return fr.indices.contains(i) && fr[i].width >= 640 && fr[i].height >= 420
+    }
 
     var body: some View {
         let d = model.profile.display(uuid: offer.display)
@@ -215,14 +229,26 @@ struct MiniStage: View {
             ForEach(Array(frames.enumerated()), id: \.offset) { i, f in
                 let occupant = offer.previous.slots.indices.contains(i) ? offer.previous.slots[i].flatMap { model.window($0) } : nil
                 let on = over == i
-                Button { pick(i) } label: {
+                Button { if overStack && stackable(i) { stack(i) } else { pick(i) } } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6).fill(on ? Color.purple.opacity(0.55) : Color.white.opacity(0.08))
                     if let t = occupant.flatMap({ model.thumbs[$0.id] }), !on {
                         Image(nsImage: t).resizable().aspectRatio(contentMode: .fill).frame(width: f.width / k, height: f.height / k).clipped().opacity(0.55)
                     }
                     VStack(spacing: 3) {
-                        if on {
+                        if on && stackable(i) {
+                            // 上半：换掉；下半：叠上去
+                            VStack(spacing: 2) {
+                                Text("换掉它").font(.system(size: 10, weight: .bold))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(overStack ? Color.white.opacity(0.08) : Color.purple))
+                                Label("叠在上面", systemImage: "square.stack.3d.up.fill").font(.system(size: 10, weight: .bold))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(overStack ? Color.purple : Color.white.opacity(0.08)))
+                                    .contentShape(Rectangle())
+                                    .onHover { overStack = $0 }
+                            }.padding(3)
+                        } else if on {
                             Image(nsImage: appIcon(offer.window.pid)).resizable().frame(width: 22, height: 22)
                             Text("换进这里").font(.system(size: 10, weight: .bold))
                         } else if let occ = occupant {
@@ -244,7 +270,7 @@ struct MiniStage: View {
                 .scaleEffect(on ? 1.03 : 1)
                 .animation(.spring(response: 0.25, dampingFraction: 0.7), value: on)
                 .onHover { inside in
-                    if inside { over = i; hover(i) } else if over == i { over = nil; hover(nil) }
+                    if inside { over = i; hover(i) } else if over == i { over = nil; overStack = false; hover(nil) }
                 }
                 .offset(x: f.minX / k, y: f.minY / k)
             }

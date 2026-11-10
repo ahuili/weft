@@ -586,10 +586,10 @@ public final class StageManager {
         if let (v, j) = locate(w.id) {
             carried = stages[v]!.stacks.removeValue(forKey: w.id) ?? []
             stages[v]!.slots[j] = nil
-            if v != u { layout(v) }
+            if v != u { shrink(v); layout(v); onMovedAway(w.id, v) }
         } else if let (v, _, top) = stackLocate(w.id) {
             stages[v]!.stacks[top]?.removeAll { $0 == w.id }
-            if v != u { layout(v) }
+            if v != u { layout(v); onMovedAway(w.id, v) }
         }
         st = stages[u]!
         bringBack(w)
@@ -730,9 +730,13 @@ public final class StageManager {
         if let (u, i) = locate(w.id), u != pl.display {
             carried = stages[u]!.stacks.removeValue(forKey: w.id) ?? []
             stages[u]!.slots[i] = nil
-            layout(u); onRelayout(u)
+            shrink(u)
+            layout(u); onMovedAway(w.id, u); onRelayout(u)
         }
-        if stackLocate(w.id) != nil { unstack(w.id) }
+        if let (u, _, _) = stackLocate(w.id) {
+            unstack(w.id)
+            if u != pl.display { onMovedAway(w.id, u) }
+        }
         bringBack(w)
         let old = stages[pl.display]!
         var stacks = old.stacks
@@ -898,6 +902,35 @@ public final class StageManager {
 
     /// 格子里的窗口没了，要不要让刚才在这格的窗口补回来（界面层：存好的场景里 App 退了 → 位置留着等它）
     public var refillAllowed: (String, Int) -> Bool = { _, _ in true }
+
+    /// 你亲手把窗口从一块屏拖到了另一块屏（窗口, 原来那块屏）：界面层据此把它从原来那块屏的场景里拿掉
+    public var onMovedAway: (UInt32, String) -> Void = { _, _ in }
+
+    /// 窗口被拖去别的屏以后，这块屏剩下的窗口收紧：版式缩一格（四宫格→一主两辅→左右→专注），不留一个空格子。
+    /// 拖进来长一格，拖走缩一格。原来就有空格子（故意空着的）、有锁住的格子、或者一个都不剩时不动
+    private func shrink(_ u: String) {
+        guard let st = stages[u], st.locked.isEmpty, st.emptySlots.count == 1 else { return }
+        let ids = st.windows
+        guard !ids.isEmpty else { return }
+        let spec = StageGeometry.effective(st.spec, filled: ids.count)
+        guard spec != st.spec else { return }
+        let act = st.slots.indices.contains(st.active) ? st.slots[st.active] : nil
+        var ns = DisplayStage(spec: spec, slots: ids.map { Optional($0) }, stacks: st.stacks)
+        ns.active = act.flatMap { ns.slots.firstIndex(of: $0) } ?? 0
+        stages[u] = ns
+        log("窗口拖走了，版式收紧成 \(spec.layout)")
+    }
+
+    /// 把一块屏清空（空桌面）：台上的窗口都退到后台，留一个空的专注格
+    public func clearAll(display u: String) {
+        guard isActive, actions.profile().display(uuid: u) != nil else { return }
+        touch(); snapshot()
+        for id in stages[u]?.allWindows ?? [] { hide(id) }
+        stages[u] = DisplayStage(spec: StageSpec(.focus), slots: [])
+        focusedDisplay = u
+        layout(u)
+        onRelayout(u)
+    }
 
     /// 用户切到了某个窗口（⌘Tab、点 Dock、通知……）：不在台上就换进当前格子
     @discardableResult
@@ -1163,6 +1196,10 @@ public final class StageManager {
                 }
                 if let other { home[other] = u }
                 home[id] = to
+                if to != u {
+                    onMovedAway(id, u)
+                    if let other { onMovedAway(other, to) }
+                }
                 stages[to]!.active = j
                 focusedDisplay = to
                 layout(u)
@@ -1174,10 +1211,13 @@ public final class StageManager {
             // 拖到了一块还没有舞台的屏幕：在那块屏上台，原来的格子空出来
             if let dd = prof.display(containing: f.center), dd.uuid != u, stages[dd.uuid] == nil {
                 touch(); snapshot()
+                let carried = stages[u]!.stacks.removeValue(forKey: id) ?? []
                 stages[u]!.slots[i] = nil
-                stages[dd.uuid] = DisplayStage(spec: StageSpec(.focus), slots: [id])
+                shrink(u)
+                stages[dd.uuid] = DisplayStage(spec: StageSpec(.focus), slots: [id], stacks: carried.isEmpty ? [:] : [id: carried])
                 home[id] = dd.uuid
                 focusedDisplay = dd.uuid
+                onMovedAway(id, u)
                 layout(u); layout(dd.uuid)
                 log("拖到另一块屏：\(name)")
                 onRelayout(dd.uuid)

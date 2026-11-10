@@ -53,8 +53,8 @@ struct CheatSheetView: View {
 
     var core: [Row] {
         var r = [Row(key: settings.stageTrigger.display, what: settings.hubTrigger == .off ? "进舞台；舞台开着时 = 总控（搜索、换版式、整理、退出舞台）" : "舞台模式：选版式、挑窗口；再按一次退出")]
-        if settings.quickSwitch != .off { r.append(Row(key: settings.quickSwitch.display, what: "按住连按，在窗口之间切；松开就过去")) }
-        if settings.sceneSwipe { r.append(Row(key: "⌃ ←  /  ⌃ →", what: "切场景（四指左右滑也行），换的是鼠标所在的屏")) }
+        if settings.quickSwitch != .off { r.append(Row(key: settings.quickSwitch.display, what: "按住连按：先翻这一格里叠着的，再是这块屏别的场景（最近用的在前）；松开就过去")) }
+        if settings.sceneSwipe { r.append(Row(key: "⌃ ←  /  ⌃ →", what: "按位置挨个切场景（四指左右滑也行），最右边是空桌面")) }
         return r
     }
 
@@ -63,7 +63,7 @@ struct CheatSheetView: View {
         if settings.shelfEdge != .off {
             r.append(Row(key: settings.shelfHandle ? "屏幕边的小把手" : "鼠标碰\(settings.shelfEdge == .left ? "左" : "右")边缘", what: "打开侧栏：所有窗口，点一下就上台"))
         }
-        r.append(Row(key: "拖窗口到另一块屏", what: "自动插进那块屏的场景"))
+        r.append(Row(key: "拖窗口到另一块屏", what: "插进那块屏的场景；原来那块屏自动收紧 / 摆回上一个场景"))
         r.append(Row(key: "拖窗口时按住 ⇧", what: "叠到落点那一格上（一格最多 5 个）"))
         r.append(Row(key: "⌥ + 滚轮（标题栏上）", what: "这一格原地换窗口；叠着的一摞会展开来选"))
         return r

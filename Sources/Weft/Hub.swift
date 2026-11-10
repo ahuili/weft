@@ -53,7 +53,7 @@ final class HubState: ObservableObject {
     func rebuild(_ m: AppModel) {
         let q = query.trimmingCharacters(in: .whitespaces)
         let acts = actions(m)
-        let scenes = m.switcherScenes(for: display).filter { !m.sceneDormant($0) }
+        let scenes = m.switcherScenes(for: display).filter { !m.sceneDormant($0) && !m.isBlank($0.id) }
         var out: [BarGroup] = []
         if q.isEmpty {
             let pred = m.predicted(5)
@@ -89,6 +89,8 @@ final class HubState: ObservableObject {
         let u = display
         let post = { (name: String) in NotificationCenter.default.post(name: .init(name), object: nil) }
         var a: [BarAction] = []
+        a.append(BarAction(id: "blank", title: "空桌面", detail: "这块屏清空（现在的场景原样留着），马上挑一个窗口放进来", symbol: "macwindow.badge.plus", key: "⌘N",
+                           keywords: "new desk blank empty kong xinjian 新建 新场景 空 桌面") { m.newDesk(on: u.isEmpty ? nil : u) })
         if m.stageActive {
             a.append(BarAction(id: "layout", title: "换版式…", detail: "这块屏分成 1~4 格，空格子里直接挑窗口", symbol: "rectangle.split.2x1", keywords: "layout banshi 版式 分屏 格子") { post("WeftOpenLayoutPicker") })
             a.append(BarAction(id: "save", title: "把这块屏存成场景", detail: "现在的窗口和版式记下来，以后一键摆回来", symbol: "square.and.arrow.down", keywords: "save scene baocun 保存 场景") {
@@ -423,6 +425,7 @@ final class HubController: NSObject, NSWindowDelegate {
             case "j": model.arrange(); return nil
             case "k": model.tidy(); return nil
             case "e": hide(); model.toggleStage(); return nil
+            case "n": let u = state.display; hide(); model.newDesk(on: u.isEmpty ? nil : u); return nil
             case "z": model.stageActive ? model.undoStage() : model.undo(); state.rebuild(model); return nil
             default: break
             }

@@ -42,6 +42,10 @@ final class AppModel: ObservableObject {
     var sceneUsedAt: [String: Date] = [:]
     /// 自动开的单独场景是从哪个场景切过来的：它的 App 退了、场景收掉时回到那个场景
     var soloReturn: [String: String] = [:]
+    /// 你亲手拖去另一块屏的窗口 → 它原来那块屏（原来那块屏的场景不再记着它）
+    var handMoved: [UInt32: String] = [:]
+    /// 刚被拖走、还没收尾的（窗口, 原来那块屏）
+    var pendingLeft: [(UInt32, String)] = []
     /// 最近一次按下鼠标的位置（判断新窗口是不是点 Dock 开的）
     var lastClick: (at: CGPoint, time: Date)?
     private var clickMonitor: Any?
@@ -527,6 +531,10 @@ final class AppModel: ObservableObject {
         stage.onRelayout = { [weak self] _ in self?.stageChanged() }
         stage.activationHandler = { [weak self] w in self?.handleActivation(w) ?? false }
         stage.refillAllowed = { [weak self] u, i in self?.sceneAllowsRefill(u, i) ?? true }
+        stage.onMovedAway = { [weak self] id, from in
+            self?.handMoved[id] = from
+            self?.pendingLeft.append((id, from))
+        }
         if clickMonitor == nil {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
                 let p = NSEvent.mouseLocation
@@ -751,6 +759,8 @@ final class AppModel: ObservableObject {
         system.onFocusChange = {}
         if let o = activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); activationObserver = nil }
         stageActive = false
+        for id in Set(showingScene.values) { dropIfBlank(id) }
+        handMoved.removeAll(); pendingLeft.removeAll()
         showingScene.removeAll()
         stashed = stash.entries
         stageChanged()

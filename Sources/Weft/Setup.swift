@@ -310,7 +310,7 @@ struct KeysPane: View {
             tester
             TriggerPicker(state: state, title: "总控", desc: "命令栏：搜窗口 / App / 场景 / 动作。不设也行：舞台开着时按舞台的键就是它", trigger: binding(\.hubTrigger), allowDoubleTap: true)
             TriggerPicker(state: state, title: "舞台模式 开 / 关", desc: "只留当前要用的窗口", trigger: binding(\.stageTrigger), allowDoubleTap: true)
-            TriggerPicker(state: state, title: "快速切换", desc: "按住修饰键连按，松开就切过去", trigger: binding(\.quickSwitch), allowDoubleTap: false)
+            TriggerPicker(state: state, title: "快速切换", desc: "舞台模式下切的是看不见的东西：先翻叠着的窗口，再按最近用过的顺序切场景；没开舞台时按窗口切", trigger: binding(\.quickSwitch), allowDoubleTap: false)
             TriggerPicker(state: state, title: "侧栏", desc: "打开后按数字直达，鼠标停在窗口上按 ⇧数字 编号", trigger: binding(\.shelfTrigger), allowDoubleTap: true)
             TriggerPicker(state: state, title: "场景切换", desc: "场景截图卡片，左右滑选、回车摆到鼠标所在的屏；再按一次 = 下一个", trigger: binding(\.sceneTrigger), allowDoubleTap: true)
             slotPicker
@@ -727,7 +727,7 @@ struct DonePane: View {
             Text("好了，就这些").font(.system(size: 22, weight: .heavy, design: .rounded))
             row(model.settings.hubTrigger.display, "打开总控", "搜索拼音直达、按事情分组、排布建议")
             row(model.settings.stageTrigger.display, "舞台模式 开 / 关", "只留现在要用的窗口")
-            row(model.settings.quickSwitch.display, "快速切换", "按住连按，松开即切")
+            row(model.settings.quickSwitch.display, "快速切换", "先翻叠着的，再切场景；松开即切")
             row(model.settings.shelfTrigger.display, "侧栏", "按数字直达，⇧数字 编号")
             row(model.settings.sceneTrigger.display, "场景切换", "截图卡片左右滑，每块屏各自换场景")
             if model.settings.sceneSwipe { row("⌃← →  四指滑", "切场景", "像切系统桌面：按住 ⌃ 连按 / 滑动选，松开就摆") }
