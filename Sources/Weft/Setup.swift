@@ -308,7 +308,7 @@ struct KeysPane: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             tester
-            TriggerPicker(state: state, title: "总控", desc: "全屏面板：搜索、事情、AI", trigger: binding(\.hubTrigger), allowDoubleTap: true)
+            TriggerPicker(state: state, title: "总控", desc: "命令栏：搜窗口 / App / 场景 / 动作。不设也行：舞台开着时按舞台的键就是它", trigger: binding(\.hubTrigger), allowDoubleTap: true)
             TriggerPicker(state: state, title: "舞台模式 开 / 关", desc: "只留当前要用的窗口", trigger: binding(\.stageTrigger), allowDoubleTap: true)
             TriggerPicker(state: state, title: "快速切换", desc: "按住修饰键连按，松开就切过去", trigger: binding(\.quickSwitch), allowDoubleTap: false)
             TriggerPicker(state: state, title: "侧栏", desc: "打开后按数字直达，鼠标停在窗口上按 ⇧数字 编号", trigger: binding(\.shelfTrigger), allowDoubleTap: true)
@@ -326,9 +326,9 @@ struct KeysPane: View {
                 Button("换成精简键位") {
                     model.settings.simplifyKeys(); model.settings.save(); model.onSettingsChanged()
                 }
-                .disabled(model.settings.sceneTrigger == .off && model.settings.slotModifier == .off)
+                .disabled(model.settings.sceneTrigger == .off && model.settings.slotModifier == .off && model.settings.hubTrigger == .off)
                 Button("快捷键速查") { NotificationCenter.default.post(name: .init("WeftOpenCheatSheet"), object: nil) }
-                Text("精简 = 场景切换器不单独占键（⌃←/→ 就是它）、数字槽位关掉。之后随时能在这页改回来")
+                Text("精简 = 总控并进舞台的键（舞台开着时按它就是总控，换版式、退出舞台都在里面）、场景切换器不单独占键（⌃←/→ 就是它）、数字槽位关掉。之后随时能在这页改回来")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }

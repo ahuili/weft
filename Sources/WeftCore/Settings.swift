@@ -111,8 +111,8 @@ public enum SlotModifier: String, Codable, CaseIterable {
 
 public struct WeftSettings: Codable, Equatable {
     public var setupDone = false
-    /// 总控
-    public var hubTrigger: Trigger = .doubleTap(.rightOption)
+    /// 总控（命令栏）。默认不单独占键：舞台开着时，舞台的键就是它；想要单独的键可以在设置里给一个
+    public var hubTrigger: Trigger = .off
     /// 快速切换（按住修饰键连按）
     public var quickSwitch: Trigger = .combo(.optionTab)
     /// 舞台模式开关
@@ -176,10 +176,11 @@ public struct WeftSettings: Codable, Equatable {
     public static func load(_ store: Store = .shared) -> WeftSettings { store.load(WeftSettings.self, "settings.json") ?? WeftSettings() }
     public func save(_ store: Store = .shared) { store.save(self, "settings.json") }
 
-    /// 精简键位：只留舞台、快速切换、⌃←/→ 三样要记的，侧栏的键留给爱用键盘的人；场景切换器和数字槽位不占键
+    /// 精简键位：只留舞台、快速切换、⌃←/→ 三样要记的，侧栏的键留给爱用键盘的人；总控并进舞台的键，场景切换器和数字槽位不占键
     public mutating func simplifyKeys() {
         let d = WeftSettings()
         sceneTrigger = d.sceneTrigger
+        hubTrigger = d.hubTrigger
         slotModifier = d.slotModifier
         sceneSwipe = true
     }

@@ -21,6 +21,8 @@ struct ShelfView: View {
     var activate: (WindowInfo) -> Void
     var peek: (WindowInfo?, CGRect) -> Void
     var close: () -> Void
+    /// 把一行拖出去：(窗口, 松手了没)
+    var drag: (WindowInfo, Bool) -> Void = { _, _ in }
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -152,48 +154,96 @@ extension ShelfView {
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.purple.opacity(0.10)))
         }
-        MomentCard(model: model, close: close)
-        if model.settings.slotModifier != .off || state.byKey {
-            VStack(alignment: .leading, spacing: 4) {
-                SlotBar(model: model, compact: true, after: close).frame(maxWidth: .infinity, alignment: .leading)
-                Text(state.byKey ? "按数字直达 · 鼠标停在窗口上按 ⇧数字 编号 · 打字搜索" : "鼠标停在窗口上按 ⇧数字 编号")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
-            }
+        sceneCards
+        topApps
+        if model.settings.slotModifier != .off {
+            SlotBar(model: model, compact: true, after: close).frame(maxWidth: .infinity, alignment: .leading)
         }
-        if !model.contexts.isEmpty { contextChips }
-        if let (a, b) = model.habitPair() { pairCard(a, b) }
 
         let onStage = model.stageActive ? model.stage.onStage : []
         let pinned = model.pinnedWindows()
-        let pinnedIDs = Set(pinned.map(\.id))
         let manual = model.windows.filter { model.isManuallyStashed($0.id) }
         let manualIDs = Set(manual.map(\.id))
-        let next = model.predicted(8).filter { !pinnedIDs.contains($0.id) && !onStage.contains($0.id) && !manualIDs.contains($0.id) }.prefix(4)
 
+        later(manual)
         if !pinned.isEmpty { grid("📌 固定", pinned) }
-        if !next.isEmpty { grid("✨ 接下来", Array(next)) }
         appGroups(model.windows.filter { !onStage.contains($0.id) && !manualIDs.contains($0.id) })
-        grid("🅿️ 停靠", manual, empty: "暂时不用又不想关的窗口，右键 → 停靠，就收在这里")
     }
 
-    var contextChips: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            title("🗂 事情")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(model.contexts) { c in
-                        let n = model.resolved(c).count
-                        Button { close(); model.enter(c) } label: {
-                            Text("\(c.emoji) \(c.name)").font(.system(size: 12, weight: .medium))
-                                .padding(.horizontal, 9).padding(.vertical, 5)
-                                .background(Capsule().fill(model.color(c.color).opacity(0.25)))
-                                .opacity(n == 0 ? 0.4 : 1)
+    /// 这块屏的场景：点一下就切
+    @ViewBuilder var sceneCards: some View {
+        let u = model.stage.currentDisplay() ?? ""
+        let list = model.switcherScenes(for: u).filter { !model.sceneDormant($0) }
+        if !list.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                title("🎬 这块屏的场景", list.count)
+                VStack(spacing: 3) {
+                    ForEach(list) { c in
+                        let on = model.showingScene[u] == c.id
+                        Button { close(); model.switchScene(c, on: u) } label: {
+                            HStack(spacing: 7) {
+                                Text(c.emoji).font(.system(size: 13))
+                                Text(c.name).font(.system(size: 12, weight: on ? .bold : .medium)).lineLimit(1)
+                                Spacer(minLength: 0)
+                                HStack(spacing: -4) {
+                                    ForEach(Array(model.resolved(c).prefix(4)), id: \.id) { w in
+                                        Image(nsImage: appIcon(w.pid)).resizable().frame(width: 15, height: 15)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 9).padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(on ? Color.purple.opacity(0.28) : Color.white.opacity(0.06)))
+                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(on ? Color.purple.opacity(0.8) : .clear, lineWidth: 1))
+                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain).disabled(n == 0)
-                        .help(model.stageActive ? "把这件事请上台" : "把这件事的窗口带到前面（\(n) 个）")
+                        .buttonStyle(.plain)
+                        .help(on ? "现在摆着的就是它" : "切到这个场景")
                     }
                 }
             }
+        }
+    }
+
+    /// 常用 App：按你最近的使用时间排（一周前的只算一半），不是写死的；用键盘打开侧栏时按数字直达
+    @ViewBuilder var topApps: some View {
+        let apps = model.topApps(6)
+        if !apps.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                title("⭐ 常用")
+                HStack(spacing: 0) {
+                    ForEach(Array(apps.enumerated()), id: \.element.id) { i, a in
+                        Button { close(); model.openTopApp(a) } label: {
+                            VStack(spacing: 3) {
+                                Image(nsImage: a.icon).resizable().frame(width: 32, height: 32)
+                                    .opacity(a.windows.isEmpty ? 0.45 : 1)
+                                    .overlay(alignment: .topTrailing) {
+                                        if state.byKey && model.settings.slotModifier == .off {
+                                            Text("\(i + 1)").font(.system(size: 9, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                                                .frame(width: 14, height: 14).background(Circle().fill(Color.purple)).offset(x: 5, y: -4)
+                                        }
+                                    }
+                                Circle().fill(a.onStage ? Color.purple : .clear).frame(width: 4, height: 4)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(a.windows.isEmpty ? "\(a.name)（没开着）：点一下打开" : a.onStage ? "\(a.name)：已经在台上，点一下切过去" : "\(a.name)：点一下请上台")
+                    }
+                }
+            }
+        }
+    }
+
+    /// 稍后处理：你特意放一边、等会儿要回来的窗口。点一下回到台上，也就从这里消失；把手上的小点提醒你这里还有东西
+    @ViewBuilder func later(_ ws: [WindowInfo]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            title("⏳ 稍后处理", ws.isEmpty ? nil : ws.count)
+            if ws.isEmpty {
+                Text("等会儿要回的消息、要看的文档：右键窗口 →「稍后处理」。它先退到后台，屏幕边的把手上会亮一个点提醒你。")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(ws) { w in WindowRow(model: model, window: w, showApp: true, activate: activate, peek: peek, drag: drag) }
         }
     }
 
@@ -249,7 +299,7 @@ extension ShelfView {
             title(model.stageActive ? "🎭 后台 · 按 App" : "🪟 全部窗口 · 按 App", ws.count)
             ForEach(groups, id: \.0) { bundle, list in
                 if list.count == 1 {
-                    WindowRow(model: model, window: list[0], showApp: true, activate: activate, peek: peek)
+                    WindowRow(model: model, window: list[0], showApp: true, activate: activate, peek: peek, drag: drag)
                 } else {
                     let open = state.expanded.contains(bundle)
                     Button {
@@ -270,7 +320,7 @@ extension ShelfView {
                     .buttonStyle(.plain)
                     if open {
                         ForEach(list) { w in
-                            WindowRow(model: model, window: w, showApp: false, activate: activate, peek: peek).padding(.leading, 18)
+                            WindowRow(model: model, window: w, showApp: false, activate: activate, peek: peek, drag: drag).padding(.leading, 18)
                         }
                     }
                 }
@@ -300,8 +350,8 @@ extension ShelfView {
 
     var footer: some View {
         HStack(spacing: 8) {
-            Button { model.stashFocused() } label: { Label("停靠当前", systemImage: "tray.and.arrow.down") }
-                .help("把当前窗口挪开，收到「停靠」里")
+            Button { model.stashFocused() } label: { Label("当前窗口稍后处理", systemImage: "hourglass") }
+                .help("当前窗口先退到后台，记在「稍后处理」里；把手上亮一个点提醒你")
             Button {
                 close()
                 NotificationCenter.default.post(name: .init("WeftOpenArrange"), object: nil)
@@ -356,6 +406,7 @@ struct WindowRow: View {
     var showApp: Bool
     var activate: (WindowInfo) -> Void
     var peek: (WindowInfo?, CGRect) -> Void
+    var drag: ((WindowInfo, Bool) -> Void)? = nil
     @State private var hover = false
 
     var body: some View {
@@ -374,6 +425,10 @@ struct WindowRow: View {
         .contentShape(Rectangle())
         .modifier(HoverFrame { h, r in hover = h; peek(h ? window : nil, r) })
         .onTapGesture { activate(window) }
+        // 拖到屏幕上的某一格：松手就放进去（按住 ⇧ = 叠上去）
+        .simultaneousGesture(DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .onChanged { _ in drag?(window, false) }
+            .onEnded { _ in drag?(window, true) })
         .contextMenu { WindowMenu(model: model, window: window) }
     }
 }
@@ -418,7 +473,7 @@ struct WindowMenu: View {
         }
         Divider()
         Button(model.isPinned(window) ? "取消固定" : "📌 固定") { model.togglePin(window) }
-        Button(model.isManuallyStashed(window.id) ? "取消停靠" : "🅿️ 停靠") { model.toggleStash(window) }
+        Button(model.isManuallyStashed(window.id) ? "不用稍后处理了" : "⏳ 稍后处理") { model.toggleStash(window) }
         Button(model.isFloating(window.bundleID) ? "🪶 \(window.appName) 不再随手" : "🪶 \(window.appName) 设成随手窗口") { model.setFloating(window.bundleID, !model.isFloating(window.bundleID)) }
         if !model.contexts.isEmpty {
             Menu("加入事情") {
@@ -587,9 +642,11 @@ final class ShelfController {
             p.setFrame(r, display: false)
             p.orderFrontRegardless()
         }
-        for (p, r) in zip(handles, handleFrames) where p.frame != r && !(p.contentView as? HandleView)!.dragging {
-            p.setFrame(r, display: true)
-            p.orderFrontRegardless()
+        let waiting = model.stashed.filter(\.isManual).count
+        for (p, r) in zip(handles, handleFrames) {
+            guard let v = p.contentView as? HandleView else { continue }
+            if v.count != waiting { v.count = waiting }
+            if p.frame != r && !v.dragging { p.setFrame(r, display: true); p.orderFrontRegardless() }
         }
     }
 
@@ -621,7 +678,8 @@ final class ShelfController {
             model: model, state: state,
             activate: { [weak self] w in self?.hide(); self?.model.focus(w) },
             peek: { [weak self] w, r in self?.state.hovered = w; self?.peek(w, r) },
-            close: { [weak self] in self?.hide() }))
+            close: { [weak self] in self?.hide() },
+            drag: { [weak self] w, ended in self?.drag(w, ended: ended) }))
         let vf = screen.visibleFrame
         let width: CGFloat = 312
         let left = edge != .right
@@ -647,9 +705,24 @@ final class ShelfController {
         // 鼠标离开边栏一段距离后自动收起
         watch = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let p = self.panel, !self.stayOpen, !self.state.byKey else { return }
+                guard let self, let p = self.panel, !self.stayOpen, !self.state.byKey, !self.dragging else { return }
                 if !p.frame.insetBy(dx: -24, dy: -24).contains(NSEvent.mouseLocation) { self.hide() }
             }
+        }
+    }
+
+    private var dragging = false
+    /// 从侧栏把一行拖到屏幕上：侧栏变淡让出视线，格子上画落点；松手放进去（落在侧栏上 = 不放）
+    private func drag(_ w: WindowInfo, ended: Bool) {
+        guard model.stageActive, let p = panel else { return }
+        let inside = p.frame.contains(NSEvent.mouseLocation)
+        if !ended {
+            if !dragging { dragging = true; peek(nil, .zero); p.animator().alphaValue = 0.35 }
+            model.shelfDragMoved(w, cancel: inside)
+        } else {
+            dragging = false
+            p.alphaValue = 1
+            if model.shelfDragEnded(w, cancel: inside) { hide() }
         }
     }
 
@@ -669,6 +742,12 @@ final class ShelfController {
         if !state.query.isEmpty {
             let ws = FuzzyMatcher.rank(model.windows, query: state.query)
             if ws.indices.contains(n - 1) { let w = ws[n - 1]; hide(); model.focus(w) }
+            return nil
+        }
+        // 没开数字槽位：数字 = 第 n 个常用 App
+        if model.settings.slotModifier == .off {
+            let apps = model.topApps(6)
+            if apps.indices.contains(n - 1) { hide(); model.openTopApp(apps[n - 1]) }
             return nil
         }
         hide()
@@ -753,6 +832,8 @@ final class HandleView: NSView {
     var onDrag: (CGFloat) -> Void = { _ in }
     var onDrop: () -> Void = {}
     private(set) var dragging = false
+    /// 「稍后处理」里还有几个窗口：把手上亮几个点（最多 3 个）
+    var count = 0 { didSet { needsDisplay = true } }
     private var hot = false { didSet { needsDisplay = true } }
     private var downY: CGFloat = 0
     private var moved = false
@@ -790,5 +871,11 @@ final class HandleView: NSView {
             NSColor.white.withAlphaComponent(0.55).setFill(); path.fill()
         }
         NSColor.black.withAlphaComponent(0.35).setStroke(); path.lineWidth = 1; path.stroke()
+        for i in 0..<min(count, 3) {
+            let d: CGFloat = 6
+            let dot = NSBezierPath(ovalIn: NSRect(x: right ? bounds.maxX - d - 10 : 10, y: r.maxY - d - 2 - CGFloat(i) * (d + 3), width: d, height: d))
+            NSColor.systemOrange.setFill(); dot.fill()
+            NSColor.black.withAlphaComponent(0.4).setStroke(); dot.lineWidth = 0.5; dot.stroke()
+        }
     }
 }

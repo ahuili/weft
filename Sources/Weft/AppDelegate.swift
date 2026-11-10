@@ -66,6 +66,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setup.tryShelf = { [weak self] in self?.shelf.toggle() }
 
         let nc = NotificationCenter.default
+        nc.addObserver(forName: .init("WeftOpenLayoutPicker"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hub.hide(); self?.deck.closePicker(); self?.deck.showLayoutPicker() }
+        }
+        nc.addObserver(forName: .init("WeftOpenStudio"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hub.hide(); self?.studio.show() }
+        }
         nc.addObserver(forName: .init("WeftOpenCheatSheet"), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.openCheatSheet() }
         }
@@ -185,6 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 舞台快捷键：没开 → 进入并弹出版式盘；开着 → 弹出版式盘；版式盘开着时再按 → 退出舞台
     func stageKey() {
+        // 总控没有单独的键（精简键位）：舞台开着时，这个键就是总控——换版式、退出舞台都在里面
+        if model.stageActive && model.settings.hubTrigger == .off && !deck.isLayoutPickerVisible {
+            hub.toggle()
+            return
+        }
         hub.hide()
         deck.trigger = model.settings.stageTrigger.display
         if !model.stageActive {
@@ -204,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deck.refreshPlaceholders()
         if on && model.settings.stageCurtain {
             curtain.look = model.settings.curtainLook
-            curtain.hint = "舞台模式 · 鼠标碰\(model.settings.shelfEdge == .right ? "右" : "左")边缘看后台 · \(model.settings.stageTrigger.display) 退出"
+            curtain.hint = "舞台模式 · 鼠标碰\(model.settings.shelfEdge == .right ? "右" : "左")边缘看后台 · \(model.settings.stageTrigger.display) \(model.settings.hubTrigger == .off ? "打开总控" : "退出")"
             curtain.show()
         } else {
             curtain.hide()
@@ -371,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "hubquery":
             // hubquery <文字>：打开总控并填好搜索词（查搜索结果用）
             hub.show(); hub.state.query = a.dropFirst().joined(separator: " "); hub.state.rebuild(model)
+            if a.count > 1, a.last == "!run", let it = hub.state.selectedItem { hub.run(it) }
         case "appsearch":
             // appsearch <out> <文字>：搜 App 的结果（查搜索用）
             if a.count > 2 {
@@ -602,7 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = add("⚠️ 权限未完成，点这里设置…", #selector(openPermissions))
             menu.addItem(.separator())
         }
-        _ = add("打开总控（\(s.hubTrigger.display)）", #selector(openHub))
+        _ = add("打开总控（\(s.hubTrigger == .off ? "舞台里按 " + s.stageTrigger.display : s.hubTrigger.display)）", #selector(openHub))
         let st = add(model.stageActive ? "退出舞台模式（\(s.stageTrigger.display)）" : "舞台模式（\(s.stageTrigger.display)）", #selector(toggleStage))
         st.state = model.stageActive ? .on : .off
         _ = add(s.sceneTrigger == .off ? "场景切换…" : "场景切换…（\(s.sceneTrigger.display)）", #selector(openScenes))

@@ -708,7 +708,7 @@ do {
     check(WeftSettings().slotModifier == .off && WeftSettings().sceneTrigger == .off && SlotModifier.controlOption.carbon == (KeyCombo.control | KeyCombo.option), "精简键位：数字槽位、场景切换器默认不占键")
     var lean = WeftSettings(); lean.slotModifier = .option; lean.sceneTrigger = .doubleTap(.leftControl); lean.shelfTrigger = .doubleTap(.leftOption)
     lean.simplifyKeys()
-    check(lean.slotModifier == .off && lean.sceneTrigger == .off && lean.shelfTrigger == .doubleTap(.leftOption) && lean.shelfHandle, "换成精简键位：侧栏的键留着")
+    check(lean.slotModifier == .off && lean.sceneTrigger == .off && lean.hubTrigger == .off && lean.shelfTrigger == .doubleTap(.leftOption) && lean.shelfHandle, "换成精简键位：侧栏的键留着")
     let old = try! JSONDecoder().decode(WeftSettings.self, from: Data(#"{"slotModifier":"option","sceneTrigger":{"doubleTap":{"_0":"rightOption"}}}"#.utf8))
     check(old.slotModifier == .option && old.sceneTrigger == .doubleTap(.rightOption), "老设置里的键位原样保留")
 }
@@ -728,12 +728,45 @@ check(parsed[0].scenes[1].spec.layout == .focus, "AI 方案：只有一个窗口
 let legacyAI = try! JSONDecoder().decode(AIConfig.self, from: Data(#"{"source":"magpie","baseURL":"http://127.0.0.1:3425/v1","model":"x"}"#.utf8))
 check(!legacyAI.isConfigured, "旧版自动导入的 Magpie 配置视为未配置，让用户自己选")
 let st0 = try! JSONDecoder().decode(WeftSettings.self, from: Data("{}".utf8))
-check(st0.hubTrigger == .doubleTap(.rightOption) && st0.quickSwitch == .combo(.optionTab) && !st0.setupDone, "设置默认值")
+check(st0.hubTrigger == .off && st0.stageTrigger == .doubleTap(.rightCommand) && st0.quickSwitch == .combo(.optionTab) && !st0.setupDone, "设置默认值")
 var st1 = WeftSettings(); st1.stageTrigger = .combo(KeyCombo(keyCode: 49, modifiers: KeyCombo.control | KeyCombo.option, display: "⌃⌥ Space"))
 let st2 = try! JSONDecoder().decode(WeftSettings.self, from: JSONEncoder().encode(st1))
 check(st2 == st1, "设置读写一致")
-st1.stageTrigger = .doubleTap(.rightOption)
+st1.stageTrigger = .doubleTap(.rightOption); st1.hubTrigger = .doubleTap(.rightOption)
 check(st1.conflicts().count == 1, "检测到两个功能用了同一个触发方式")
+
+// MARK: 使用记录：锁屏 / 人不在不计时；常用 App 跟着最近的习惯变
+do {
+    let hs = Store(dir: FileManager.default.temporaryDirectory.appendingPathComponent("weft-habit2-\(UUID().uuidString)"))
+    let ht = HabitTracker(store: hs)
+    func win(_ id: UInt32, _ b: String, _ n: String) -> WindowInfo {
+        var w = hw[0]; w.id = id; w.bundleID = b; w.appName = n; w.title = n; return w
+    }
+    let a = win(901, "app.a", "甲"), b = win(902, "app.b", "乙"), lock = win(903, "com.apple.loginwindow", "loginwindow")
+    var t = Date(timeIntervalSince1970: 1_800_000_000)
+    ht.observe(focused: a, now: t); t += 600
+    ht.observe(focused: lock, now: t); t += 8 * 3600          // 锁屏一晚上
+    ht.observe(focused: a, now: t); t += 300
+    ht.observe(focused: nil, now: t, away: true); t += 3600   // 人走开一小时
+    ht.observe(focused: a, now: t); t += 100
+    ht.observe(focused: b, now: t)
+    let secA = ht.db.windows.values.first { $0.bundleID == "app.a" }?.focusSeconds ?? 0
+    check(abs(secA - 1000) < 1 && !ht.db.windows.values.contains { $0.bundleID == "com.apple.loginwindow" }, "锁屏和人不在的时间不算使用时间 \(secA)")
+    ht.maxGap = 30
+    for _ in 0..<3 { t += 25; ht.observe(focused: b, now: t) }
+    t += 7200; ht.observe(focused: b, now: t)                 // 睡眠了两小时才又被叫到
+    t += 25; ht.observe(focused: a, now: t)
+    ht.maxGap = nil
+    let secB = ht.db.windows.values.first { $0.bundleID == "app.b" }?.focusSeconds ?? 0
+    check(abs(secB - 100) < 1, "中间断了很久（睡眠）不算进去 \(secB)")
+    check(ht.topApps(3, now: t).map(\.bundleID) == ["app.a", "app.b"], "常用 App：用得多的排前面")
+    // 三周以后甲不怎么用了，乙天天用：排名换过来
+    ht.observe(focused: nil, now: t, away: true)
+    t += 21 * 86400
+    ht.observe(focused: b, now: t); t += 400; ht.observe(focused: a, now: t); t += 10; ht.observe(focused: b, now: t)
+    check(ht.topApps(3, now: t).first?.bundleID == "app.b", "常用 App 跟着最近的习惯变 \(ht.topApps(3, now: t).map { "\($0.bundleID) \(Int($0.score))" })")
+    check(ht.topApps(3, now: t, exclude: ["app.b"]).first?.bundleID == "app.a", "常用 App 可以排除随手窗口")
+}
 
 // MARK: 场景归屏：位置按笔记本 / 扩展屏从左到右，不认具体哪台显示器
 do {

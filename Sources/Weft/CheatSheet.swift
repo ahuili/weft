@@ -52,7 +52,7 @@ struct CheatSheetView: View {
     struct Row: Identifiable { let id = UUID(); let key: String; let what: String }
 
     var core: [Row] {
-        var r = [Row(key: settings.stageTrigger.display, what: "舞台模式：选版式、挑窗口；再按一次退出")]
+        var r = [Row(key: settings.stageTrigger.display, what: settings.hubTrigger == .off ? "进舞台；舞台开着时 = 总控（搜索、换版式、整理、退出舞台）" : "舞台模式：选版式、挑窗口；再按一次退出")]
         if settings.quickSwitch != .off { r.append(Row(key: settings.quickSwitch.display, what: "按住连按，在窗口之间切；松开就过去")) }
         if settings.sceneSwipe { r.append(Row(key: "⌃ ←  /  ⌃ →", what: "切场景（四指左右滑也行），换的是鼠标所在的屏")) }
         return r
@@ -71,7 +71,7 @@ struct CheatSheetView: View {
 
     var extra: [Row] {
         var r: [Row] = []
-        if settings.hubTrigger != .off { r.append(Row(key: settings.hubTrigger.display, what: "总控：搜索、整理桌面（⌘K）、排布建议（⌘J）")) }
+        if settings.hubTrigger != .off { r.append(Row(key: settings.hubTrigger.display, what: "总控：搜窗口 / App / 场景 / 动作")) }
         if settings.shelfTrigger != .off { r.append(Row(key: settings.shelfTrigger.display, what: "用键盘打开侧栏，按数字直达")) }
         if settings.sceneTrigger != .off { r.append(Row(key: settings.sceneTrigger.display, what: "场景切换器（和 ⌃←/→ 是同一排卡片）")) }
         if settings.slotModifier != .off {

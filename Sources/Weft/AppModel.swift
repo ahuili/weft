@@ -134,7 +134,10 @@ final class AppModel: ObservableObject {
 
     private func trackTick() {
         guard Permissions.accessibility else { return }
-        habits.observe(focused: system.focusedWindow())
+        habits.maxGap = 30
+        // 10 分钟没碰键盘鼠标 = 人不在，不算使用时间
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!) > 600
+        habits.observe(focused: system.focusedWindow(), away: idle)
         tick += 1
         if tick % 20 == 0 && !stageActive { engine.autosaveTick() }
         if tick % 60 == 0 { habits.persistIfNeeded() }
@@ -380,7 +383,7 @@ final class AppModel: ObservableObject {
         if stageActive && stage.isOnStage(id) { stage.dismiss(id); stageChanged() }
         stash.stash(w)
         stashed = stash.entries
-        Toast.show("🅿️ 已停靠：\(w.title.isEmpty ? w.appName : w.title)")
+        Toast.show("⏳ 稍后处理：\(w.title.isEmpty ? w.appName : w.title) · 在侧栏里等你", seconds: 1.8)
     }
 
     func togglePin(_ w: WindowInfo) {
@@ -583,6 +586,81 @@ final class AppModel: ObservableObject {
     func stackWindow(_ w: WindowInfo, display u: String, slot i: Int) {
         guard stage.stackOnto(w, display: u, slot: i) else { Toast.show("这一格太小或锁着，叠不了", seconds: 1.4); return }
         stageChanged(); syncScenes()
+    }
+
+    // MARK: 从侧栏拖到格子
+
+    private var shelfPlan: StageManager.InsertPlan?
+    private var shelfStack: (display: String, slot: Int)?
+
+    /// 侧栏里的一行被拖到了屏幕上：在鼠标下面的格子画落点
+    func shelfDragMoved(_ w: WindowInfo, cancel: Bool) {
+        guard stageActive, !cancel else { shelfPlan = nil; shelfStack = nil; onDropPreview(nil, ""); return }
+        let p = CGEvent(source: nil)?.location ?? .zero
+        if NSEvent.modifierFlags.contains(.shift), let (u, i) = stage.slotHit(p), let top = stage.stage(for: u)?.slots[i], top != w.id,
+           stage.canStack(display: u, slot: i), let base = stage.baseSlotFrames(u).dropFirst(i).first {
+            let k = min((stage.stage(for: u)?.depth(i) ?? 0) + 1, DisplayStage.maxStack - 1)
+            if shelfStack?.display != u || shelfStack?.slot != i {
+                shelfStack = (u, i); shelfPlan = nil
+                onDropPreview(StageManager.layer(base, k, of: k), "叠上去 · 第 \(k + 1) 层")
+            }
+            return
+        }
+        let hadStack = shelfStack != nil
+        shelfStack = nil
+        guard let u = profile.display(containing: p)?.uuid, let plan = stage.planInsert(w.id, display: u, at: p) else {
+            shelfPlan = nil; onDropPreview(nil, ""); return
+        }
+        if plan != shelfPlan || hadStack {
+            shelfPlan = plan
+            let grows = plan.slots.compactMap { $0 }.count > (stage.stage(for: u)?.windows.count ?? 0)
+            onDropPreview(plan.frame, plan.replaces != nil ? "换掉这一格 · 按住 ⇧ 叠上去" : grows ? "插到这里 · \(plan.spec.layout.title)" : "放这里")
+        }
+    }
+
+    /// 松手：放进去了返回 true
+    func shelfDragEnded(_ w: WindowInfo, cancel: Bool) -> Bool {
+        defer { shelfPlan = nil; shelfStack = nil; onDropPreview(nil, "") }
+        guard stageActive, !cancel else { return false }
+        if let (u, i) = shelfStack { stackWindow(w, display: u, slot: i); return true }
+        let p = CGEvent(source: nil)?.location ?? .zero
+        guard shelfPlan != nil, let u = profile.display(containing: p)?.uuid, let plan = stage.planInsert(w.id, display: u, at: p) else { return false }
+        guard stage.insert(w, plan: plan) else { return false }
+        stageChanged(); syncScenes()
+        system.focus(w.id)
+        return true
+    }
+
+    // MARK: 常用 App
+
+    struct TopApp: Identifiable {
+        let id: String
+        let name: String
+        let icon: NSImage
+        let windows: [WindowInfo]
+        let onStage: Bool
+    }
+
+    /// 最近最常用的几个 App（按使用时间、越近越算数）。没开着的也列出来，点一下打开
+    func topApps(_ n: Int) -> [TopApp] {
+        var skip = Set(settings.floatingApps)
+        if let me = Bundle.main.bundleIdentifier { skip.insert(me) }
+        let staged = stageActive ? stage.onStage : []
+        return habits.topApps(n + 4, exclude: skip).compactMap { a -> TopApp? in
+            let ws = windows.filter { $0.bundleID == a.bundleID }.sorted { (habits.mru.firstIndex(of: $0.id) ?? 999) < (habits.mru.firstIndex(of: $1.id) ?? 999) }
+            let icon: NSImage
+            if let w = ws.first { icon = appIcon(w.pid) }
+            else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: a.bundleID) { icon = NSWorkspace.shared.icon(forFile: url.path) }
+            else { return nil }   // 卸载了
+            return TopApp(id: a.bundleID, name: ws.first?.appName ?? a.appName, icon: icon, windows: ws, onStage: ws.contains { staged.contains($0.id) })
+        }.prefix(n).map { $0 }
+    }
+
+    func openTopApp(_ a: TopApp) {
+        if let w = a.windows.first(where: { stageActive && stage.isOnStage($0.id) }) ?? a.windows.first { focus(w); return }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: a.id) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+        Toast.show("正在打开 \(a.name)…", seconds: 1.4)
     }
 
     private func dragBegan() {

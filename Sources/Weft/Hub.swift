@@ -3,67 +3,111 @@ import Carbon
 import SwiftUI
 import WeftCore
 
-/// 总控：双击 ⌥ 打开。一个面板里完成「找、去、整理」。
-struct HubSection: Identifiable {
-    var id: String
-    var title: String
-    var emoji: String
-    var color: Color
-    var context: WorkContext?
-    var windows: [WindowInfo]
-    var numbered = false
-    var proposalReason: String? = nil
+/// 总控 = 屏幕中间的一条命令栏：打字就搜窗口、App、场景和动作；不打字时只给「接下来可能要去」和这块屏的场景。
+/// （以前是一整屏的窗口墙，和调度中心重复，用的人少。）整理桌面 / 排布建议还是在这里盖一层打开。
+struct BarAction: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let symbol: String
+    var key: String? = nil
+    var keywords: String = ""
+    /// 做完要不要收起命令栏
+    var closes = true
+    let run: () -> Void
 }
 
-struct HubItem: Hashable { var section: String; var window: UInt32 }
+enum BarItem: Identifiable {
+    case window(WindowInfo)
+    case app(AppEntry)
+    case scene(WorkContext, current: Bool)
+    case action(BarAction)
+
+    var id: String {
+        switch self {
+        case .window(let w): return "w\(w.id)"
+        case .app(let a): return "a\(a.id)"
+        case .scene(let c, _): return "s\(c.id)"
+        case .action(let a): return "x\(a.id)"
+        }
+    }
+}
+
+struct BarGroup: Identifiable {
+    let id: String
+    let title: String
+    var items: [BarItem]
+    var numbered = false
+}
 
 @MainActor
 final class HubState: ObservableObject {
     @Published var query = ""
-    @Published var sections: [HubSection] = []
-    @Published var selected: HubItem?
-    /// 搜索词匹配、但现在没有窗口的 App（退了 / 开着没窗口）：点一下打开
-    @Published var apps: [AppEntry] = []
-    var flat: [HubItem] = []
-    var columns = 4
+    @Published var groups: [BarGroup] = []
+    @Published var selected: String?
+    var flat: [BarItem] = []
+    /// 命令栏开在哪块屏（场景切到这块屏）
+    var display = ""
+    var close: () -> Void = {}
 
     func rebuild(_ m: AppModel) {
-        var out: [HubSection] = []
         let q = query.trimmingCharacters(in: .whitespaces)
-        let stashedIDs = Set(m.stashed.filter(\.isManual).map(\.windowID))
-        if !q.isEmpty {
-            out.append(HubSection(id: "search", title: "搜索结果", emoji: "🔎", color: .accentColor,
-                                  windows: Array(FuzzyMatcher.rank(m.windows, query: q).prefix(24)), numbered: true))
-        } else {
+        let acts = actions(m)
+        let scenes = m.switcherScenes(for: display).filter { !m.sceneDormant($0) }
+        var out: [BarGroup] = []
+        if q.isEmpty {
             let pred = m.predicted(5)
-            if !pred.isEmpty {
-                out.append(HubSection(id: "pred", title: "接下来可能要去", emoji: "✨", color: .accentColor, windows: pred, numbered: true))
+            if !pred.isEmpty { out.append(BarGroup(id: "next", title: "接下来可能要去", items: pred.map { .window($0) }, numbered: true)) }
+            if !scenes.isEmpty {
+                out.append(BarGroup(id: "scenes", title: "这块屏的场景", items: scenes.map { .scene($0, current: m.showingScene[display] == $0.id) }))
             }
-            var used = Set<UInt32>()
-            for c in m.contexts {
-                let ws = m.resolved(c)
-                guard !ws.isEmpty else { continue }
-                used.formUnion(ws.map(\.id))
-                out.append(HubSection(id: "ctx-\(c.id)", title: c.name, emoji: c.emoji, color: m.color(c.color), context: c, windows: ws))
-            }
-            let rest = m.windows.filter { !used.contains($0.id) && !stashedIDs.contains($0.id) }
-                .sorted { ($0.appName, $0.zIndex) < ($1.appName, $1.zIndex) }
-            if !rest.isEmpty {
-                out.append(HubSection(id: "rest", title: m.contexts.isEmpty ? "所有窗口" : "其他窗口", emoji: "🪟", color: .gray, windows: rest))
-            }
-            let st = m.windows.filter { stashedIDs.contains($0.id) && !used.contains($0.id) }
-            if !st.isEmpty { out.append(HubSection(id: "stash", title: "已停靠", emoji: "🅿️", color: .gray, windows: st)) }
+            out.append(BarGroup(id: "actions", title: "动作", items: acts.map { .action($0) }))
+        } else {
+            let ws = Array(FuzzyMatcher.rank(m.windows, query: q).prefix(8))
+            if !ws.isEmpty { out.append(BarGroup(id: "windows", title: "窗口", items: ws.map { .window($0) })) }
+            let sc = m.scenes.compactMap { c in FuzzyMatcher.score(query: q, candidates: [c.name]).map { (c, $0) } }.sorted { $0.1 > $1.1 }.prefix(4)
+            if !sc.isEmpty { out.append(BarGroup(id: "scenes", title: "场景", items: sc.map { .scene($0.0, current: m.showingOn($0.0.id) != nil) })) }
+            let apps = AppCatalog.shared.search(q, windows: m.windows, limit: 4)
+            if !apps.isEmpty { out.append(BarGroup(id: "apps", title: "App（现在没有窗口）", items: apps.map { .app($0) })) }
+            let ac = acts.compactMap { a in FuzzyMatcher.score(query: q, candidates: [a.title, a.keywords]).map { (a, $0) } }.sorted { $0.1 > $1.1 }.prefix(5)
+            if !ac.isEmpty { out.append(BarGroup(id: "actions", title: "动作", items: ac.map { .action($0.0) })) }
         }
-        sections = out
-        apps = q.isEmpty ? [] : AppCatalog.shared.search(q, windows: m.windows)
-        flat = out.flatMap { s in s.windows.map { HubItem(section: s.id, window: $0.id) } }
-        if selected == nil || !flat.contains(selected!) { selected = flat.first }
+        groups = out
+        flat = out.flatMap(\.items)
+        if selected == nil || !flat.contains(where: { $0.id == selected }) { selected = flat.first?.id }
     }
 
     func move(_ d: Int) {
         guard !flat.isEmpty else { return }
-        let i = selected.flatMap { flat.firstIndex(of: $0) } ?? 0
-        selected = flat[max(0, min(flat.count - 1, i + d))]
+        let i = flat.firstIndex { $0.id == selected } ?? 0
+        selected = flat[(i + d + flat.count) % flat.count].id
+    }
+
+    var selectedItem: BarItem? { flat.first { $0.id == selected } }
+
+    func actions(_ m: AppModel) -> [BarAction] {
+        let u = display
+        let post = { (name: String) in NotificationCenter.default.post(name: .init(name), object: nil) }
+        var a: [BarAction] = []
+        if m.stageActive {
+            a.append(BarAction(id: "layout", title: "换版式…", detail: "这块屏分成 1~4 格，空格子里直接挑窗口", symbol: "rectangle.split.2x1", keywords: "layout banshi 版式 分屏 格子") { post("WeftOpenLayoutPicker") })
+            a.append(BarAction(id: "save", title: "把这块屏存成场景", detail: "现在的窗口和版式记下来，以后一键摆回来", symbol: "square.and.arrow.down", keywords: "save scene baocun 保存 场景") {
+                if let c = m.saveScene(from: u) { Toast.show("🎬 已存成场景「\(c.name)」· 场景工作台里可以改名", seconds: 2.2) }
+            })
+        }
+        a.append(BarAction(id: "tidy", title: "整理桌面", detail: "删空桌面、清理空窗口和重复窗口、AI 归成场景", symbol: "wand.and.rays", key: "⌘K", keywords: "tidy zhengli clean 清理", closes: false) { m.tidy() })
+        a.append(BarAction(id: "arrange", title: "排布建议", detail: "AI 按你的窗口、屏幕和习惯给几套摆法", symbol: "sparkles", key: "⌘J", keywords: "arrange paibu ai 摆放", closes: false) { m.arrange() })
+        a.append(BarAction(id: "studio", title: "场景工作台", detail: "建场景、改场景、绑定另一块屏", symbol: "square.grid.2x2", keywords: "studio scene changjing 编辑") { post("WeftOpenStudio") })
+        if m.stageActive {
+            a.append(BarAction(id: "heal", title: "归位", detail: "乱了就用：每个窗口回自己的格子", symbol: "arrow.triangle.2.circlepath", keywords: "heal guiwei reset 复位") { m.healStage() })
+        }
+        a.append(BarAction(id: "later", title: "当前窗口稍后处理", detail: "先退到后台，记在侧栏的「稍后处理」里", symbol: "hourglass", keywords: "later shaohou stash 停靠 待办") { m.stashFocused() })
+        a.append(BarAction(id: "stage", title: m.stageActive ? "退出舞台模式" : "进入舞台模式", detail: m.stageActive ? "所有窗口回到原来的位置" : "只留现在要用的窗口，其余退到后台",
+                           symbol: "theatermasks", key: "⌘E", keywords: "stage wutai exit quit 退出 舞台") { m.toggleStage() })
+        a.append(BarAction(id: "undo", title: "撤销上一步", detail: "", symbol: "arrow.uturn.backward", key: "⌘Z", keywords: "undo chexiao") { m.stageActive ? m.undoStage() : m.undo() })
+        a.append(BarAction(id: "keys", title: "快捷键速查", detail: "", symbol: "keyboard", key: "?", keywords: "keys shortcut help kuaijiejian 帮助") { post("WeftOpenCheatSheet") })
+        a.append(BarAction(id: "settings", title: "设置…", detail: "", symbol: "gearshape", keywords: "settings preferences shezhi") { post("WeftOpenSettings") })
+        return a
     }
 }
 
@@ -71,53 +115,24 @@ struct HubView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var state: HubState
     var close: () -> Void
-    var activate: (WindowInfo) -> Void
+    var run: (BarItem) -> Void
     @FocusState private var searchFocused: Bool
     @State private var appeared = false
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.28).contentShape(Rectangle()).onTapGesture { close() }
-            VStack(spacing: 16) {
-                header
-                if model.settings.slotModifier != .off {
-                    HStack(spacing: 10) {
-                        SlotBar(model: model, after: close)
-                        Text("选中窗口后按 \(model.slotKey)⇧数字 钉住").font(.system(size: 11)).foregroundStyle(.tertiary)
-                        Spacer()
-                    }
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.16).contentShape(Rectangle()).onTapGesture { close() }
+            GeometryReader { g in
+                VStack(spacing: 10) {
+                    bar
+                    if model.organizing || (model.aiMessage != nil && !model.tidyVisible) { aiBanner }
                 }
-                if model.stageActive {
-                    HStack(spacing: 14) {
-                        Image(systemName: "theatermasks.fill").foregroundStyle(.purple)
-                        Text("舞台模式").font(.system(size: 13, weight: .bold))
-                        StageBar(model: model)
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
-                }
-                if model.aiMessage != nil && !model.tidyVisible { aiBanner }
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 26) {
-                            ForEach(state.sections) { section in sectionView(section) }
-                            if !state.apps.isEmpty { appsSection }
-                            if state.sections.isEmpty && state.apps.isEmpty {
-                                Text(model.windows.isEmpty ? "还没读到窗口：请先在引导页授予辅助功能权限" : "没有匹配的窗口")
-                                    .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 60)
-                            }
-                        }.padding(.vertical, 10).padding(.horizontal, 6)
-                    }
-                    .onChange(of: state.selected) { _, s in
-                        if let s { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(s, anchor: .center) } }
-                    }
-                }
-                footer
+                .frame(width: min(700, g.size.width - 80))
+                .frame(maxWidth: .infinity)
+                .padding(.top, max(60, g.size.height * 0.16))
+                .scaleEffect(appeared ? 1 : 0.97, anchor: .top)
+                .opacity(appeared ? 1 : 0)
             }
-            .frame(maxWidth: 1260)
-            .padding(.horizontal, 48).padding(.vertical, 36)
-            .scaleEffect(appeared ? 1 : 0.97)
-            .opacity(appeared ? 1 : 0)
             if model.arrangeVisible {
                 Color.black.opacity(0.3).contentShape(Rectangle()).onTapGesture { model.arrangeVisible = false }
                 ArrangeSheet(model: model, close: close).frame(maxWidth: 1200).padding(60)
@@ -133,53 +148,84 @@ struct HubView: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: model.tidyVisible)
         .onAppear {
             searchFocused = true
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { appeared = true }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.85)) { appeared = true }
         }
         .onChange(of: state.query) { _, _ in state.rebuild(model) }
-        .onChange(of: model.contexts) { _, _ in withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { state.rebuild(model) } }
+        .onChange(of: model.contexts) { _, _ in state.rebuild(model) }
     }
 
-    var header: some View {
-        HStack(spacing: 14) {
+    var bar: some View {
+        VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary)
-                TextField("去哪个窗口？输入名字或拼音，如 wx、gh pr、lq", text: $state.query)
-                    .textFieldStyle(.plain).font(.system(size: 22)).focused($searchFocused)
+                Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .medium)).foregroundStyle(.secondary)
+                TextField("找窗口、App、场景，或者要做的事（支持拼音：wx、zl）", text: $state.query)
+                    .textFieldStyle(.plain).font(.system(size: 20)).focused($searchFocused)
+                if model.stageActive {
+                    Text("🎭 舞台").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(Color.purple.opacity(0.25)))
+                }
             }
-            .padding(.horizontal, 18).padding(.vertical, 13)
-            .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.12)))
+            .padding(.horizontal, 18).padding(.vertical, 14)
+            Divider().opacity(0.5)
+            HStack(alignment: .top, spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(state.groups) { g in
+                                Text(g.title).font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
+                                ForEach(Array(g.items.enumerated()), id: \.element.id) { i, it in
+                                    BarRow(model: model, item: it, selected: state.selected == it.id, number: g.numbered ? i + 1 : nil)
+                                        .id(it.id)
+                                        .onHover { if $0 { state.selected = it.id } }
+                                        .onTapGesture { run(it) }
+                                        .contextMenu { if case .window(let w) = it { WindowMenu(model: model, window: w) } }
+                                }
+                            }
+                            if state.flat.isEmpty {
+                                Text(model.windows.isEmpty ? "还没读到窗口：请先在引导页授予辅助功能权限" : "没有匹配的结果")
+                                    .font(.system(size: 13)).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 28)
+                            }
+                        }
+                        .padding(8)
+                    }
+                    .onChange(of: state.selected) { _, s in if let s { proxy.scrollTo(s) } }
+                }
+                // 选中的是窗口：右边给一张大一点的预览，几个 Chrome 窗口也分得清
+                if case .window(let w)? = state.selectedItem, let t = model.thumbs[w.id] {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Image(nsImage: t).resizable().aspectRatio(contentMode: .fit)
+                            .frame(width: 240, height: 150).background(Color.black.opacity(0.25))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                        if let l = model.labels[w.id] { Text(l).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2) }
+                    }
+                    .frame(width: 240, alignment: .leading)
+                    .padding(12)
+                }
+            }
+            .frame(maxHeight: 430)
+            Divider().opacity(0.5)
+            HStack(spacing: 14) {
+                hint("↩", "去 / 执行"); hint("↑↓", "选"); hint("⌘← ⌘→", "窗口放左 / 右格")
+                if state.query.isEmpty { hint("1-5", "直达") }
+                Spacer()
+                hint("?", "快捷键"); hint("esc", "关闭")
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+        }
+        .background(Glass(material: .hudWindow))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.16)))
+        .shadow(color: .black.opacity(0.4), radius: 30, y: 12)
+    }
 
-            Button { model.tidy() } label: {
-                Label("整理桌面", systemImage: "wand.and.rays")
-                    .font(.system(size: 14, weight: .semibold)).padding(.horizontal, 14).padding(.vertical, 12)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
-            }.buttonStyle(.plain).help("⌘K：看所有桌面、删空桌面、AI 整理成场景、清理空窗口和重复窗口")
-
-            Button { model.arrange() } label: {
-                Label("排布建议", systemImage: "sparkles")
-                    .font(.system(size: 14, weight: .semibold)).padding(.horizontal, 14).padding(.vertical, 12)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(LinearGradient(colors: [.purple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)))
-                    .foregroundStyle(.white)
-            }.buttonStyle(.plain).help("⌘J：AI 按你的窗口、屏幕和习惯给出几套摆放方案")
-
-            Button { model.toggleStage() } label: {
-                Label(model.stageActive ? "退出舞台" : "舞台", systemImage: "theatermasks")
-                    .font(.system(size: 14, weight: .semibold)).padding(.horizontal, 14).padding(.vertical, 12)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(model.stageActive ? AnyShapeStyle(Color.purple.opacity(0.5)) : AnyShapeStyle(.ultraThinMaterial)))
-            }.buttonStyle(.plain).help("⌘E：只留现在要用的窗口，其余退到后台")
-
-            Menu {
-                Button("保存当前布局（这组显示器）") { _ = model.engine.saveManual(); Toast.show("📐 已保存布局") }
-                Button("恢复布局") { let n = model.engine.restore(); Toast.show(n > 0 ? "已恢复 \(n) 个窗口" : "这组显示器还没保存过布局") }
-                Divider()
-                Button("撤销上一步  ⌘Z") { model.undo() }
-                Divider()
-                Button("设置…") { close(); NotificationCenter.default.post(name: .init("WeftOpenSettings"), object: nil) }
-            } label: {
-                Image(systemName: "rectangle.3.group").font(.system(size: 16, weight: .semibold))
-                    .padding(12).background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
-            }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+    func hint(_ k: String, _ v: String) -> some View {
+        HStack(spacing: 5) {
+            Text(k).font(.system(size: 10, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.12)))
+            Text(v).font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 
@@ -188,133 +234,86 @@ struct HubView: View {
             if model.organizing {
                 ProgressView().controlSize(.small)
                 Text("AI 正在根据窗口标题和你的切换习惯归类…（\(model.modelLabel())）").foregroundStyle(.secondary)
+                Spacer()
             } else if let msg = model.aiMessage {
                 Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                 Text(msg).foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
                 Button("知道了") { model.aiMessage = nil }
             }
-            if model.organizing { Spacer() }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
-        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
+struct BarRow: View {
+    @ObservedObject var model: AppModel
+    let item: BarItem
+    let selected: Bool
+    var number: Int?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            icon.frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                if !detail.isEmpty { Text(detail).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1) }
+            }
+            Spacer(minLength: 6)
+            if let t = trailing {
+                Text(t).font(.system(size: 10, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.1)))
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.3) : .clear))
+        .contentShape(Rectangle())
     }
 
-    /// 没有窗口的 App：退了的、开着但没窗口的，搜得到、点一下打开
-    var appsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 2).fill(Color.gray).frame(width: 4, height: 18)
-                Text("📦  App（现在没有窗口）").font(.system(size: 16, weight: .bold))
-                Text(state.flat.isEmpty ? "↩ 打开第一个" : "点一下打开").font(.system(size: 12)).foregroundStyle(.secondary)
-            }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 10)], alignment: .leading, spacing: 6) {
-                ForEach(state.apps) { a in AppRow(app: a) { a in close(); AppCatalog.open(a) } }
-            }
+    @ViewBuilder var icon: some View {
+        switch item {
+        case .window(let w): Image(nsImage: appIcon(w.pid)).resizable()
+        case .app(let a): Image(nsImage: a.icon).resizable().opacity(a.running ? 1 : 0.7)
+        case .scene(let c, _): Text(c.emoji).font(.system(size: 17))
+        case .action(let a): Image(systemName: a.symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
         }
     }
 
-    func sectionView(_ s: HubSection) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 2).fill(s.color).frame(width: 4, height: 18)
-                Text("\(s.emoji)  \(s.title)").font(.system(size: 16, weight: .bold))
-                Text("\(s.windows.count)").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(.white.opacity(0.08)))
-                if let r = s.proposalReason, !r.isEmpty { Text(r).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
-                Spacer()
-                if let c = s.context {
-                    if let plan = c.plan {
-                        ForEach(Array(plan.enumerated()), id: \.offset) { _, pl in LayoutIcon(spec: pl.spec, size: CGSize(width: 24, height: 16)) }
-                    }
-                    Button { close(); model.enter(c) } label: { Label(c.plan != nil ? "摆出来" : "进入", systemImage: "arrow.right.circle") }
-                        .help("把这件事的所有窗口带到最前（有记住的摆放就按摆放排好）")
-                    Button { close(); model.enter(c, focusMode: true) } label: { Label("专注", systemImage: "scope") }
-                        .help("进入并最小化其他所有窗口")
-                    Menu {
-                        Button("记住当前摆放") { model.rememberLayout(c) }
-                        Button("删除这件事", role: .destructive) { model.delete(c); state.rebuild(model) }
-                    } label: { Image(systemName: "ellipsis.circle") }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                }
-            }
-            .buttonStyle(.borderless)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 232, maximum: 232), spacing: 22, alignment: .topLeading)],
-                      alignment: .leading, spacing: 20) {
-                ForEach(Array(s.windows.enumerated()), id: \.element.id) { idx, w in
-                    let item = HubItem(section: s.id, window: w.id)
-                    WindowCard(window: w, thumb: model.thumbs[w.id], selected: state.selected == item,
-                               accent: s.color == .gray ? .accentColor : s.color,
-                               badge: s.numbered && idx < 9 ? "\(idx + 1)" : nil,
-                               subtitle: subtitle(w), flags: flags(w))
-                        .id(item)
-                        .onHover { if $0 { state.selected = item } }
-                        .onTapGesture { activate(w) }
-                        .contextMenu { cardMenu(w) }
-                }
-            }
+    var title: String {
+        switch item {
+        case .window(let w): return w.title.isEmpty ? w.appName : w.title
+        case .app(let a): return a.name
+        case .scene(let c, _): return c.name
+        case .action(let a): return a.title
         }
     }
 
-    func subtitle(_ w: WindowInfo) -> String {
-        var parts = [w.appName]
-        if let l = model.labels[w.id] { parts.append(l) }
-        if model.profile.displays.count > 1, let d = model.profile.display(uuid: w.displayUUID) { parts.append(d.isBuiltin ? "笔记本屏" : d.name) }
-        if let last = model.habits.lastFocused(w), last > .distantPast {
-            let m = Date().timeIntervalSince(last) / 60
-            parts.append(m < 1 ? "刚刚" : m < 60 ? "\(Int(m)) 分钟前" : m < 1440 ? "\(Int(m / 60)) 小时前" : "\(Int(m / 1440)) 天前")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    func flags(_ w: WindowInfo) -> [String] {
-        var f: [String] = []
-        if let s = model.slotLabel(w.id) { f.append(s) }
-        if model.isPinned(w) { f.append("📌") }
-        if model.stageActive && model.stage.isOnStage(w.id) { f.append("🎭 台上") }
-        else if model.isManuallyStashed(w.id) { f.append("🅿️") }
-        else if model.stash.isStashed(w.id) { f.append("后台") }
-        if model.isFloating(w.bundleID) { f.append("🪶 随手") }
-        if w.isMinimized { f.append("最小化") }
-        if !w.axAvailable { f.append("其他桌面") }
-        return f
-    }
-
-    @ViewBuilder func cardMenu(_ w: WindowInfo) -> some View {
-        Button(model.isPinned(w) ? "从侧边栏取消固定" : "📌 固定到侧边栏  ⌘P") { model.togglePin(w); state.rebuild(model) }
-        Button(model.isManuallyStashed(w.id) ? "取消停靠" : "🅿️ 停靠（挪开，缩略图留在侧边栏）  ⌘S") { model.toggleStash(w); state.rebuild(model) }
-        SlotMenu(model: model, window: w)
-        Button(model.isFloating(w.bundleID) ? "🪶 \(w.appName) 不再随手（又能进场景）" : "🪶 \(w.appName) 设成随手窗口（不进场景、切场景不藏）") {
-            model.setFloating(w.bundleID, !model.isFloating(w.bundleID)); state.rebuild(model)
-        }
-        Divider()
-        Button(model.stageActive ? "放到主位  ⌘←" : "左半屏  ⌘←") { close(); model.place(w, slot: 0) }
-        Button(model.stageActive ? "放到副位  ⌘→" : "右半屏  ⌘→") { close(); model.place(w, slot: 1) }
-        if !model.stageActive { Button("最大化  ⌘↑") { close(); model.snap(w, .maximize) } }
-        if !model.contexts.isEmpty {
-            Divider()
-            Menu("加入事情") {
-                ForEach(model.contexts) { c in Button("\(c.emoji) \(c.name)") { model.add(w, to: c); state.rebuild(model) } }
-            }
-            if let c = model.context(of: w) { Button("从「\(c.name)」移除") { model.remove(w, from: c); state.rebuild(model) } }
+    var detail: String {
+        switch item {
+        case .window(let w):
+            var p = [w.appName]
+            if model.stageActive { p.append(model.stage.isOnStage(w.id) ? "在台上" : "在后台") }
+            if model.isManuallyStashed(w.id) { p.append("⏳ 稍后处理") }
+            if let s = model.slotLabel(w.id) { p.append(s) }
+            return p.joined(separator: " · ")
+        case .app(let a): return a.running ? "开着，但没有窗口 · 新开一个" : "没在运行 · 打开"
+        case .scene(let c, let current):
+            let names = model.resolved(c).map(\.appName)
+            var seen = Set<String>()
+            let apps = names.filter { seen.insert($0).inserted }.prefix(4).joined(separator: " + ")
+            return (current ? "现在摆着 · " : "") + apps
+        case .action(let a): return a.detail
         }
     }
 
-    static let hints: [[String]] = [["↩", "切换 / 上台"], ["1-5", "直达推荐"], ["⌘↩", "整件事"], ["⌘← ⌘→", "放左 / 放右"],
-                                    ["⌘E", "舞台"], ["⌘J", "排布建议"], ["⌘K", "整理桌面"], ["⌘I", "AI 场景"], ["⌘P", "固定"], ["⌘S", "停靠"], ["⌘Z", "撤销"], ["esc", "关闭"]]
-
-    var footer: some View {
-        HStack(spacing: 18) {
-            ForEach(Self.hints, id: \.self) { pair in
-                let k = pair[0], v = pair[1]
-                HStack(spacing: 5) {
-                    Text(k).font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.12)))
-                    Text(v).font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
+    var trailing: String? {
+        if let number { return "\(number)" }
+        switch item {
+        case .action(let a): return a.key
+        case .scene: return "场景"
+        default: return nil
         }
     }
 }
@@ -339,24 +338,20 @@ final class HubController: NSObject, NSWindowDelegate {
         model.arrangeVisible = false
         model.tidyVisible = false
         model.refresh()
+        state.display = model.stage.currentDisplay() ?? model.profile.main?.uuid ?? ""
+        state.close = { [weak self] in self?.hide() }
         state.query = ""
         state.selected = nil
         state.rebuild(model)
         let p = KeyPanel.make()
         p.delegate = self
-        let root = ZStack {
-            Glass(material: .fullScreenUI).ignoresSafeArea()
-            HubView(model: model, state: state, close: { [weak self] in self?.hide() },
-                    activate: { [weak self] w in self?.hide(); self?.model.focus(w) })
-        }
-        p.contentView = NSHostingView(rootView: root)
+        p.contentView = NSHostingView(rootView: HubView(model: model, state: state, close: { [weak self] in self?.hide() },
+                                                        run: { [weak self] it in self?.run(it) }))
         p.setFrame(screen.frame, display: true)
         p.alphaValue = 0
         p.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.16; p.animator().alphaValue = 1 }
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.14; p.animator().alphaValue = 1 }
         panel = p
-        let usable: CGFloat = min(screen.frame.width - 96, 1260) + 22
-        state.columns = max(1, Int(usable / 254))
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in self?.handle(e) ?? e }
         if arrange { model.arrange() }
     }
@@ -371,10 +366,30 @@ final class HubController: NSObject, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) { hide() }
 
-    var selectedWindow: WindowInfo? { state.selected.flatMap { model.window($0.window) } }
+    /// 数字槽位「钉选中的窗口」用
+    var selectedWindow: WindowInfo? {
+        if case .window(let w)? = state.selectedItem { return model.window(w.id) }
+        return nil
+    }
+
+    func run(_ it: BarItem) {
+        switch it {
+        case .window(let w): hide(); model.focus(w)
+        case .app(let a): hide(); AppCatalog.open(a)
+        case .scene(let c, _):
+            let u = state.display
+            hide()
+            model.switchScene(c, on: model.showingOn(c.id) ?? (model.belongs(c, to: u) ? u : nil))
+        case .action(let a):
+            if a.closes { hide() }
+            a.run()
+            if !a.closes { state.rebuild(model) }
+        }
+    }
 
     private func handle(_ e: NSEvent) -> NSEvent? {
         let cmd = e.modifierFlags.contains(.command)
+        let overlay = model.tidyVisible || model.arrangeVisible
         switch Int(e.keyCode) {
         case kVK_Escape:
             if model.tidyVisible { model.tidyVisible = false }
@@ -382,52 +397,40 @@ final class HubController: NSObject, NSWindowDelegate {
             else if !state.query.isEmpty { state.query = "" }
             else { hide() }
             return nil
-        case kVK_ANSI_Slash where e.modifierFlags.contains(.shift) && state.query.isEmpty:
-            // ? = 快捷键速查
+        case kVK_ANSI_Slash where e.modifierFlags.contains(.shift) && state.query.isEmpty && !overlay:
+            hide()
             NotificationCenter.default.post(name: .init("WeftOpenCheatSheet"), object: nil)
             return nil
         case kVK_Return, kVK_ANSI_KeypadEnter:
             if model.tidyVisible { model.runTidy(); state.rebuild(model); return nil }
-            guard let w = selectedWindow else {
-                if let a = state.apps.first { hide(); AppCatalog.open(a) }
-                return nil
-            }
-            if cmd, let sec = state.sections.first(where: { $0.id == state.selected?.section }), let c = sec.context ?? model.context(of: w) {
-                hide(); model.enter(c)
-            } else { hide(); model.focus(w) }
+            if overlay { return e }
+            if let it = state.selectedItem { run(it) }
             return nil
         case kVK_LeftArrow:
             if cmd, let w = selectedWindow { hide(); model.place(w, slot: 0); return nil }
-            if state.query.isEmpty { state.move(-1); return nil }
             return e
         case kVK_RightArrow:
             if cmd, let w = selectedWindow { hide(); model.place(w, slot: 1); return nil }
-            if state.query.isEmpty { state.move(1); return nil }
             return e
-        case kVK_UpArrow:
-            if cmd, let w = selectedWindow { hide(); model.snap(w, .maximize); return nil }
-            state.move(-state.columns); return nil
-        case kVK_DownArrow: state.move(state.columns); return nil
-        case kVK_Tab: state.move(e.modifierFlags.contains(.shift) ? -1 : 1); return nil
+        case kVK_UpArrow: if overlay { return e }; state.move(-1); return nil
+        case kVK_DownArrow: if overlay { return e }; state.move(1); return nil
+        case kVK_Tab: if overlay { return e }; state.move(e.modifierFlags.contains(.shift) ? -1 : 1); return nil
         default: break
         }
         if cmd, let ch = e.charactersIgnoringModifiers?.lowercased() {
             switch ch {
-            case "p": if let w = selectedWindow { model.togglePin(w); state.rebuild(model) }; return nil
-            case "s": if let w = selectedWindow { model.toggleStash(w); state.rebuild(model) }; return nil
             case "i": model.tidy(); model.organize(); return nil
             case "j": model.arrange(); return nil
             case "k": model.tidy(); return nil
-            case "e": model.toggleStage(); state.rebuild(model); return nil
-            case "z": model.undo(); return nil
+            case "e": hide(); model.toggleStage(); return nil
+            case "z": model.stageActive ? model.undoStage() : model.undo(); state.rebuild(model); return nil
             default: break
             }
         }
         // 搜索框为空时，数字键直达「接下来可能要去」
-        if state.query.isEmpty, !cmd, let ch = e.characters, let n = Int(ch), n >= 1, n <= 9,
-           let sec = state.sections.first(where: { $0.numbered }), n <= sec.windows.count {
-            let w = sec.windows[n - 1]
-            hide(); model.focus(w)
+        if state.query.isEmpty, !cmd, !overlay, let ch = e.characters, let n = Int(ch), n >= 1, n <= 9,
+           let g = state.groups.first(where: { $0.numbered }), n <= g.items.count {
+            run(g.items[n - 1])
             return nil
         }
         return e

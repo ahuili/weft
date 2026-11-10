@@ -16,6 +16,8 @@ public struct HabitDB: Codable {
     public var windows: [String: WindowStats] = [:]
     /// from key → to key → 次数
     public var transitions: [String: [String: Int]] = [:]
+    /// App → 日期（yyyy-MM-dd）→ 这天用了多少秒。只留最近 30 天，用来排「常用 App」（会跟着你最近的习惯变）
+    public var appDays: [String: [String: Double]]?
     public init() {}
 }
 
@@ -32,6 +34,62 @@ public final class HabitTracker {
     public init(store: Store = .shared) {
         self.store = store
         self.db = store.load(HabitDB.self, "habits.json") ?? HabitDB()
+        // 以前锁屏、输密码的系统界面也被当成窗口记了时间：清掉
+        let junk = db.windows.filter { Self.isSystemUI($0.value.bundleID) }.map(\.key)
+        if !junk.isEmpty {
+            for k in junk { db.windows[k] = nil; db.transitions[k] = nil }
+            for k in db.transitions.keys { for j in junk { db.transitions[k]?[j] = nil } }
+            dirty = true
+        }
+    }
+
+    /// 锁屏 / 登录 / 输密码 / 系统通知这些界面：不是你在用的窗口，不记时间
+    public static func isSystemUI(_ bundleID: String) -> Bool {
+        ["com.apple.loginwindow", "com.apple.SecurityAgent", "com.apple.LocalAuthentication.UIAgent", "com.apple.UserNotificationCenter",
+         "com.apple.accessibility.universalAccessAuthWarn", "com.apple.ScreenSaver.Engine", "com.apple.screencaptureui"].contains(bundleID)
+    }
+
+    /// 两次 observe 之间隔了这么久 = 中间睡眠 / 卡住了，这段不算使用时间（界面层设成几十秒；nil = 不限，测试用）
+    public var maxGap: TimeInterval?
+    private var lastSeen: Date?
+    private static let dayFormat: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX"); return f }()
+
+    /// 结束当前这一段：把停留时间记到窗口和 App 的当天账上
+    private func close(_ c: (id: UInt32, key: String, since: Date), at end: Date) -> Double {
+        let dwell = max(0, end.timeIntervalSince(c.since))
+        db.windows[c.key]?.focusSeconds += dwell
+        if let b = db.windows[c.key]?.bundleID, dwell > 0 {
+            var days = db.appDays ?? [:]
+            days[b, default: [:]][Self.dayFormat.string(from: end), default: 0] += dwell
+            db.appDays = days
+        }
+        dirty = true
+        return dwell
+    }
+
+    /// 最常用的 App：按最近的使用时间排，越久以前的越不算数（半衰期一周），所以习惯变了排名跟着变
+    public func topApps(_ n: Int, now: Date = Date(), exclude: Set<String> = []) -> [(bundleID: String, appName: String, score: Double)] {
+        var score: [String: Double] = [:], name: [String: String] = [:]
+        let cal = Calendar.current
+        for (b, days) in db.appDays ?? [:] {
+            for (d, s) in days {
+                guard let date = Self.dayFormat.date(from: d) else { continue }
+                let age = Double(max(0, cal.dateComponents([.day], from: cal.startOfDay(for: date), to: cal.startOfDay(for: now)).day ?? 0))
+                score[b, default: 0] += s * pow(0.5, age / 7)
+            }
+        }
+        // 还没有按天的账（老数据）：用窗口的累计时间 + 上次用是什么时候估一下
+        var legacy: [String: Double] = [:]
+        for s in db.windows.values {
+            name[s.bundleID] = s.appName
+            guard db.appDays?[s.bundleID] == nil else { continue }
+            let age = max(0, now.timeIntervalSince(s.lastFocused)) / 86400
+            legacy[s.bundleID, default: 0] += s.focusSeconds * pow(0.5, age / 7)
+        }
+        score.merge(legacy) { a, _ in a }
+        return score.filter { !exclude.contains($0.key) && !Self.isSystemUI($0.key) && $0.value >= 60 && name[$0.key] != nil }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(n).map { ($0.key, name[$0.key]!, $0.value) }
     }
 
     public var currentWindowID: UInt32? { current?.id }
@@ -65,13 +123,22 @@ public final class HabitTracker {
     }
 
     /// 每秒调用一次，传入当前聚焦窗口
-    public func observe(focused: WindowInfo?, now: Date = Date()) {
+    /// away = 你不在（锁屏、长时间没动键盘鼠标）：当前这段到此为止
+    public func observe(focused: WindowInfo?, now: Date = Date(), away: Bool = false) {
+        // 中间断了很久（睡眠）：上一段只算到最后一次看到它的时候
+        if let c = current, let gap = maxGap, let seen = lastSeen, now.timeIntervalSince(seen) > gap {
+            _ = close(c, at: max(seen, c.since)); current = nil
+        }
+        lastSeen = now
+        if away || focused.map({ Self.isSystemUI($0.bundleID) }) == true {
+            if let c = current { _ = close(c, at: now); current = nil }
+            return
+        }
         guard let w = focused else { return }
         if let c = current, c.id == w.id { return }
         let k = key(for: w)
         if let c = current {
-            let dwell = now.timeIntervalSince(c.since)
-            db.windows[c.key]?.focusSeconds += dwell
+            let dwell = close(c, at: now)
             // 停留超过 1.5 秒才算一次有效的切换，过滤掉 ⌥Tab 翻过的中间窗口
             if dwell > 1.5 { db.transitions[c.key, default: [:]][k, default: 0] += 1 }
         }
@@ -94,6 +161,12 @@ public final class HabitTracker {
             let keep = Set(db.windows.sorted { $0.value.lastFocused > $1.value.lastFocused }.prefix(1500).map(\.key))
             db.windows = db.windows.filter { keep.contains($0.key) }
             db.transitions = db.transitions.filter { keep.contains($0.key) }
+        }
+        // 按天的账只留 30 天
+        if var days = db.appDays {
+            let cut = Self.dayFormat.string(from: Date().addingTimeInterval(-30 * 86400))
+            for b in days.keys { days[b] = days[b]?.filter { $0.key >= cut }; if days[b]?.isEmpty == true { days[b] = nil } }
+            db.appDays = days
         }
         store.save(db, "habits.json")
         dirty = false
