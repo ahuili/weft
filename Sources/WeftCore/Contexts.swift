@@ -140,6 +140,8 @@ public struct ContextDB: Codable {
     public var contexts: [WorkContext] = []
     public var combos: [SceneCombo]?
     public var pinned: [WorkContext.Member] = []
+    /// 老数据里「自动开的单独场景」已经补过标记了
+    public var soloMigrated: Bool?
     public init() {}
 }
 

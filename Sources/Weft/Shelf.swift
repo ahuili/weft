@@ -487,6 +487,61 @@ final class ShelfController {
 
     /// 每条感应条应该在的位置（系统挪屏时会把这些小窗口推走，定时对一下）
     private var triggerFrames: [NSRect] = []
+    private var handles: [NSPanel] = []
+    private var handleFrames: [NSRect] = []
+    static let handleSize = NSSize(width: 18, height: 84)
+
+    func handleRect(_ s: NSScreen) -> NSRect {
+        let v = s.visibleFrame, sz = Self.handleSize
+        let y = v.maxY - 30 - sz.height - CGFloat(min(max(model.settings.shelfHandleY, 0), 1)) * max(v.height - 60 - sz.height, 0)
+        return NSRect(x: edge == .left ? s.frame.minX : s.frame.maxX - sz.width, y: y, width: sz.width, height: sz.height)
+    }
+
+    /// 每块屏边上一个小把手：滑上去 / 点一下打开侧栏，上下拖可以挪位置
+    private func rebuildHandles() {
+        handles.forEach { $0.orderOut(nil) }
+        handles.removeAll(); handleFrames.removeAll()
+        guard edge != .off, model.settings.shelfHandle else { return }
+        for s in NSScreen.screens {
+            let rect = handleRect(s)
+            let p = NSPanel(contentRect: rect, styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
+            p.level = .statusBar
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+            let v = HandleView(frame: NSRect(origin: .zero, size: rect.size))
+            v.right = edge == .right
+            v.onEnter = { [weak self] in if let s = mouseScreen() { self?.scheduleShow(on: s) } }
+            v.onExit = { [weak self] in self?.pending?.cancel() }
+            v.onClick = { [weak self] in
+                guard let self else { return }
+                self.pending?.cancel()
+                if self.isVisible { self.hide() } else if let s = mouseScreen() { self.show(on: s) }
+            }
+            v.onDrag = { [weak self, weak p] dy in
+                guard let self, let p, let s = p.screen ?? mouseScreen() else { return }
+                self.pending?.cancel()
+                let vf = s.visibleFrame, sz = Self.handleSize
+                var f = p.frame
+                f.origin.y = min(max(f.origin.y + dy, vf.minY + 30), vf.maxY - 30 - sz.height)
+                p.setFrame(f, display: true)
+            }
+            v.onDrop = { [weak self, weak p] in
+                guard let self, let p, let s = p.screen ?? mouseScreen() else { return }
+                let vf = s.visibleFrame, sz = Self.handleSize
+                let span = max(vf.height - 60 - sz.height, 1)
+                self.model.settings.shelfHandleY = Double((vf.maxY - 30 - sz.height - p.frame.minY) / span)
+                self.model.settings.save()
+                self.rebuildHandles()
+            }
+            p.contentView = v
+            p.setFrame(rect, display: true)
+            p.orderFrontRegardless()
+            handles.append(p)
+            handleFrames.append(rect)
+        }
+    }
     private var triggerGuard: Timer?
 
     /// 每块屏幕边缘放一条 1px 的透明感应条
@@ -494,6 +549,7 @@ final class ShelfController {
         triggers.forEach { $0.orderOut(nil) }
         triggers.removeAll(); triggerFrames.removeAll()
         triggerGuard?.invalidate(); triggerGuard = nil
+        rebuildHandles()
         guard edge != .off else { return }
         for s in NSScreen.screens {
             let f = s.frame
@@ -529,6 +585,10 @@ final class ShelfController {
         for (p, r) in zip(triggers, triggerFrames) where p.frame != r {
             model.stageLog.append(AppModel.clock.string(from: Date()) + " 边缘感应条跑偏了 \(Int(p.frame.minX)),\(Int(p.frame.minY)) → 摆回 \(Int(r.minX)),\(Int(r.minY))")
             p.setFrame(r, display: false)
+            p.orderFrontRegardless()
+        }
+        for (p, r) in zip(handles, handleFrames) where p.frame != r && !(p.contentView as? HandleView)!.dragging {
+            p.setFrame(r, display: true)
             p.orderFrontRegardless()
         }
     }
@@ -681,4 +741,54 @@ final class EdgeView: NSView {
     }
     override func mouseEntered(with event: NSEvent) { onEnter() }
     override func mouseExited(with event: NSEvent) { onExit() }
+}
+
+
+/// 屏幕边上的小把手：平时一条细细的，鼠标靠近变宽变亮
+final class HandleView: NSView {
+    var right = false
+    var onEnter: () -> Void = {}
+    var onExit: () -> Void = {}
+    var onClick: () -> Void = {}
+    var onDrag: (CGFloat) -> Void = { _ in }
+    var onDrop: () -> Void = {}
+    private(set) var dragging = false
+    private var hot = false { didSet { needsDisplay = true } }
+    private var downY: CGFloat = 0
+    private var moved = false
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseEntered(with event: NSEvent) { hot = true; onEnter() }
+    override func mouseExited(with event: NSEvent) { hot = false; if !dragging { onExit() } }
+    override func mouseDown(with event: NSEvent) { downY = NSEvent.mouseLocation.y; moved = false; dragging = true }
+    override func mouseDragged(with event: NSEvent) {
+        let y = NSEvent.mouseLocation.y
+        if !moved && abs(y - downY) < 4 { return }
+        moved = true
+        onDrag(y - downY)
+        downY = y
+    }
+    override func mouseUp(with event: NSEvent) {
+        dragging = false
+        if moved { onDrop() } else { onClick() }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let w: CGFloat = hot ? 9 : 5
+        let h = bounds.height - (hot ? 8 : 20)
+        let x = right ? bounds.maxX - w - 3 : 3
+        let r = NSRect(x: x, y: (bounds.height - h) / 2, width: w, height: h)
+        let path = NSBezierPath(roundedRect: r, xRadius: w / 2, yRadius: w / 2)
+        if hot {
+            NSGradient(colors: [NSColor.systemPurple, NSColor.systemBlue])?.draw(in: path, angle: 90)
+        } else {
+            NSColor.white.withAlphaComponent(0.55).setFill(); path.fill()
+        }
+        NSColor.black.withAlphaComponent(0.35).setStroke(); path.lineWidth = 1; path.stroke()
+    }
 }

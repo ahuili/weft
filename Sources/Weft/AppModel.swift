@@ -40,6 +40,11 @@ final class AppModel: ObservableObject {
     /// 每个位置上次是哪台显示器（换了一台时提示一下）
     var knownDisplays: [String: String] = [:]
     var sceneUsedAt: [String: Date] = [:]
+    /// 自动开的单独场景是从哪个场景切过来的：它的 App 退了、场景收掉时回到那个场景
+    var soloReturn: [String: String] = [:]
+    /// 最近一次按下鼠标的位置（判断新窗口是不是点 Dock 开的）
+    var lastClick: (at: CGPoint, time: Date)?
+    private var clickMonitor: Any?
     /// 切到一个不在任何场景里的窗口：它单独开了新场景，界面问你要不要放进刚才那个场景的某一块
     var onOfferPlacement: (PlacementOffer) -> Void = { _ in }
     @Published var pinned: [WorkContext.Member] = []
@@ -90,6 +95,16 @@ final class AppModel: ObservableObject {
         contexts = split.contexts
         combos = (db.combos ?? []) + split.combos
         pinned = db.pinned
+        // 老版本里自动开的单独场景一被碰就变成「正经场景」，越攒越多：一次性把它们认回来（🪟 + 只有一个窗口 + 没进组合）
+        if db.soloMigrated != true {
+            let inCombo = Set(combos.flatMap { $0.parts.map(\.sceneID) })
+            var n = 0
+            for i in contexts.indices where contexts[i].emoji == "🪟" && contexts[i].members.count <= 1 && contexts[i].autoSolo != true && !inCombo.contains(contexts[i].id) {
+                contexts[i].autoSolo = true; n += 1
+            }
+            if n > 0 { try? FileManager.default.copyItem(at: store.dir.appendingPathComponent("contexts.json"), to: store.dir.appendingPathComponent("contexts.before-solo-cleanup.json")) }
+            DispatchQueue.main.async { [weak self] in self?.saveContexts() }
+        }
         if !split.combos.isEmpty { DispatchQueue.main.async { [weak self] in self?.saveContexts() } }
     }
 
@@ -502,11 +517,19 @@ final class AppModel: ObservableObject {
                     let before = (self.stage.stages, self.stash.entries)
                     self.stage.reconcile(mru: self.habits.mru)
                     if self.stage.stages != before.0 || self.stash.entries != before.1 { self.stageChanged() }
+                    self.reapAutoSolos()
                 }
             }
         }
         stage.onRelayout = { [weak self] _ in self?.stageChanged() }
         stage.activationHandler = { [weak self] w in self?.handleActivation(w) ?? false }
+        stage.refillAllowed = { [weak self] u, i in self?.sceneAllowsRefill(u, i) ?? true }
+        if clickMonitor == nil {
+            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
+                let p = NSEvent.mouseLocation
+                MainActor.assumeIsolated { self?.lastClick = (p, Date()) }
+            }
+        }
         stage.isSceneMember = { [weak self] w in self?.bestScene(containing: w) != nil }
         stageChanged()
         onStageChanged(true)
@@ -607,7 +630,7 @@ final class AppModel: ObservableObject {
         if plan != dragPlan {
             dragPlan = plan
             let n = plan.slots.compactMap { $0 }.count
-            let label = plan.replaces != nil ? "换掉这一格" : (n > (stage.stage(for: u)?.windows.count ?? 0) ? "插到这里 · \(plan.spec.layout.title)" : "放这里")
+            let label = plan.replaces != nil ? (plan.replaces.flatMap { stage.locate($0) }.map { stage.canStack(display: $0.0, slot: $0.1) } == true ? "换掉这一格 · 按住 ⇧ 叠上去" : "换掉这一格") : (n > (stage.stage(for: u)?.windows.count ?? 0) ? "插到这里 · \(plan.spec.layout.title)" : "放这里")
             onDropPreview(plan.frame, label)
         }
     }
@@ -840,6 +863,7 @@ final class AppModel: ObservableObject {
             return c.parts.count >= 2 ? c : nil
         }
         db.combos = combos
+        db.soloMigrated = true
         store.save(db, "contexts.json")
         objectWillChange.send()
     }

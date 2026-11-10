@@ -7,6 +7,7 @@ import WeftCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let model = AppModel()
     lazy var hub = HubController(model: model)
+    lazy var cheat = CheatSheet(model: model)
     lazy var quick = QuickSwitchController(model: model)
     lazy var shelf = ShelfController(model: model)
     lazy var setup = SetupController(model: model)
@@ -65,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setup.tryShelf = { [weak self] in self?.shelf.toggle() }
 
         let nc = NotificationCenter.default
+        nc.addObserver(forName: .init("WeftOpenCheatSheet"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.openCheatSheet() }
+        }
         nc.addObserver(forName: .init("WeftOpenSettings"), object: nil, queue: .main) { [weak self] n in
             let page = (n.object as? String).flatMap(SetupPage.init(rawValue:))
             MainActor.assumeIsolated { self?.hub.hide(); self?.setup.show(wizard: false, page: page) }
@@ -601,7 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = add("打开总控（\(s.hubTrigger.display)）", #selector(openHub))
         let st = add(model.stageActive ? "退出舞台模式（\(s.stageTrigger.display)）" : "舞台模式（\(s.stageTrigger.display)）", #selector(toggleStage))
         st.state = model.stageActive ? .on : .off
-        _ = add("场景切换…（\(s.sceneTrigger.display)）", #selector(openScenes))
+        _ = add(s.sceneTrigger == .off ? "场景切换…" : "场景切换…（\(s.sceneTrigger.display)）", #selector(openScenes))
         _ = add("场景工作台（建 / 改场景）…", #selector(openStudio))
         _ = add("打开后台侧栏", #selector(openShelf))
         _ = add("排布建议…", #selector(openArrange))
@@ -610,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let a = add("插拔屏时自动恢复布局", #selector(toggleAutoRestore))
         a.state = model.engine.autoRestore ? .on : .off
         _ = add("AI 模型：\(model.aiConfig.isConfigured ? "\(model.aiConfig.providerName) · \(model.modelLabel())" : "未配置")…", #selector(openAI))
+        _ = add("快捷键速查…", #selector(openCheatSheet))
         _ = add("设置…", #selector(openSettings))
         _ = add("重新运行引导…", #selector(openGuide))
         menu.addItem(.separator())
@@ -625,6 +630,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openStudio() { studio.show() }
     @objc func openScenes() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.scenes.show() } }
     @objc func toggleAutoRestore() { model.engine.autoRestore.toggle() }
+    @objc func openCheatSheet() { DispatchQueue.main.async { self.hub.hide(); self.cheat.show() } }
     @objc func openSettings() { setup.show(wizard: false) }
     @objc func openAI() { setup.show(wizard: false, page: .ai) }
     @objc func openPermissions() { setup.show(wizard: false, page: .permissions) }

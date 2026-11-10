@@ -346,7 +346,8 @@ extension AppModel {
                 || old?.stacks?.map { $0.map(\.bundleID) } != pl.stacks?.map { $0.map(\.bundleID) } {
                 contexts[i].plan = [pl]
                 contexts[i].members = pl.members.filter { !$0.bundleID.isEmpty }
-                contexts[i].autoSolo = nil   // 你动过了：是正经场景了，不会被自动收掉
+                // 你往里加了第二个窗口：是你自己搭的场景了，不再跟着 App 退出收掉（只换版式 / 比例不算）
+                if contexts[i].members.count >= 2 { contexts[i].autoSolo = nil }
                 changed = true
             }
         }
@@ -357,7 +358,10 @@ extension AppModel {
     private func keepInScene(_ w: WindowInfo?, member m: WorkContext.Member, display u: String) -> Bool {
         // 没找到窗口：整个 App 退出了（重启电脑、退一下微信）→ 场景继续记着，下次开了还认得；
         // App 还开着、只是这个窗口关了 → 你不要它了，场景里也去掉（不然切场景的卡片里老挂着它）
-        guard let w else { return NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty }
+        // （App 的窗口一个都不剩也算：正在退出的那一瞬间进程还在；微信这种关窗 = 收起来的也一样）
+        guard let w else {
+            return NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty || !system.windows().contains { $0.bundleID == m.bundleID }
+        }
         if !w.axAvailable || w.isMinimized { return true }     // 在别的系统桌面 / 最小化了
         if w.pid > 0, NSRunningApplication(processIdentifier: w.pid)?.isHidden == true { return true }
         if let loc = stage.locate(w.id) { return loc.display != u }   // 被另一块屏借走了；还在这块屏 = 你挪了格子
@@ -381,6 +385,7 @@ extension AppModel {
     func handleActivation(_ w: WindowInfo) -> Bool {
         guard stageActive, stage.stageable(w) else { return false }
         let here = stage.currentDisplay() ?? profile.main?.uuid ?? ""
+        let fromDock = clickedDock()
         if let sc = bestScene(containing: w) {
             // 场景正摆在某块屏上就去那块屏；不然回到它所属的那块屏（大屏的场景不会被挤到笔记本上）；那块屏没接才摆在你正在用的屏
             let u = showingOn(sc.id) ?? homeDisplay(sc) ?? here
@@ -396,6 +401,7 @@ extension AppModel {
         solo.autoSolo = true
         solo.home = role(of: here)
         contexts.append(solo)
+        if let prevScene { soloReturn[solo.id] = prevScene }
         pruneAutoSolos(keeping: solo.id)
         saveContexts()
         guard applyScene(solo, on: here) else {
@@ -404,8 +410,12 @@ extension AppModel {
             return false
         }
         system.focus(w.id)
-        if let prevStage, !prevStage.windows.isEmpty {
-            onOfferPlacement(PlacementOffer(display: here, window: w, previous: prevStage, previousScene: prevScene, soloScene: solo.id))
+        // 点 Dock 开的、又接着不止一块屏：Weft 不知道你想让它去哪块屏，卡片上让你挑
+        let askScreen = fromDock && profile.displays.count > 1
+        let had = prevStage.map { !$0.windows.isEmpty } ?? false
+        if had || askScreen {
+            onOfferPlacement(PlacementOffer(display: here, window: w, previous: prevStage ?? DisplayStage(spec: StageSpec(.focus), slots: []),
+                                            previousScene: prevScene, soloScene: solo.id, askScreen: askScreen))
         }
         return true
     }
@@ -468,6 +478,83 @@ extension AppModel {
         syncScenes()
         saveContexts()
         Toast.show("🪶 \(o.window.appName) 以后是随手窗口：开了就浮在上面，不进场景、不再问 · 场景工作台左下角可以改回来", seconds: 2.6)
+    }
+
+    /// 卡片上点了另一块屏：这块屏摆回刚才的，新窗口的单独场景搬到那块屏
+    func moveOffer(_ o: PlacementOffer, to u2: String) {
+        guard u2 != o.display, let i = contexts.firstIndex(where: { $0.id == o.soloScene }) else { return }
+        showingScene[o.display] = nil
+        stage.applySlots([(o.display, o.previous.spec, o.previous.slots, o.previous.stacks)])
+        if let id = o.previousScene { showingScene[o.display] = id; sceneUsedAt[id] = Date() }
+        soloReturn[o.soloScene] = showingScene[u2]
+        let idx = profile.displays.firstIndex { $0.uuid == u2 } ?? 0
+        contexts[i].home = role(of: u2)
+        contexts[i].plan = [ScenePlacement(displayUUID: u2, displayIndex: idx, spec: StageSpec(.focus), members: contexts[i].members)]
+        applyScene(contexts[i], on: u2)
+        stageChanged()
+        system.focus(o.window.id)
+        syncScenes()
+        saveContexts()
+    }
+
+    /// 刚才那一下鼠标是不是点在 Dock 上（Dock 所在的那条屏幕边）
+    func clickedDock() -> Bool {
+        guard let c = lastClick, Date().timeIntervalSince(c.time) < 60,
+              let s = NSScreen.screens.first(where: { $0.frame.contains(c.at) }) else { return false }
+        let dock = UserDefaults(suiteName: "com.apple.dock")
+        let side = dock?.string(forKey: "orientation") ?? "bottom"
+        let tile = CGFloat(dock?.double(forKey: "tilesize") ?? 0)
+        // 自动隐藏的 Dock 不占 visibleFrame：按图标大小估一条
+        let hidden = (tile > 0 ? tile : 64) + 26
+        let f = s.frame, v = s.visibleFrame
+        switch side {
+        case "left": return c.at.x <= f.minX + max(v.minX - f.minX, dock?.bool(forKey: "autohide") == true ? hidden : 0)
+        case "right": return c.at.x >= f.maxX - max(f.maxX - v.maxX, dock?.bool(forKey: "autohide") == true ? hidden : 0)
+        default: return c.at.y <= f.minY + max(v.minY - f.minY, dock?.bool(forKey: "autohide") == true ? hidden : 0)
+        }
+    }
+
+    /// 格子里的窗口没了，要不要让上一个窗口补进来：
+    /// 存好的场景里，这个 App 一个窗口都不剩了（退了）→ 不补，位置留给它，再开还回这里；自动开的单独场景也不补（整个场景马上会收掉）
+    func sceneAllowsRefill(_ u: String, _ i: Int) -> Bool {
+        guard let id = showingScene[u], let c = contexts.first(where: { $0.id == id }) else { return true }
+        if c.autoSolo == true { return false }
+        guard let ms = c.plan?.first?.members, ms.indices.contains(i), !ms[i].bundleID.isEmpty else { return true }
+        let b = ms[i].bundleID
+        return NSRunningApplication.runningApplications(withBundleIdentifier: b).contains { !$0.isTerminated } && system.windows().contains { $0.bundleID == b }
+    }
+
+    /// 自动开的单独场景（你没存过、也没往里加别的窗口）：它的窗口没了（App 退了 / 窗口关了）→ 场景跟着收掉，
+    /// 正摆着它的那块屏回到之前的场景
+    func reapAutoSolos() {
+        let autos = contexts.filter { $0.autoSolo == true }
+        guard !autos.isEmpty else { return }
+        let live = system.windows()
+        guard !live.isEmpty else { return }
+        var gone: [WorkContext] = []
+        for c in autos {
+            if let t = sceneUsedAt[c.id], Date().timeIntervalSince(t) < 4 { continue }   // 刚开的：窗口可能还没冒出来
+            guard ContextResolver.resolve(c.members, in: live).isEmpty else { continue }
+            let dead = c.members.allSatisfy { m in
+                NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty || (m.lastWindowID.map { !system.exists($0) } ?? true)
+            }
+            if dead { gone.append(c) }
+        }
+        guard !gone.isEmpty else { return }
+        for c in gone {
+            let u = showingOn(c.id)
+            contexts.removeAll { $0.id == c.id }
+            sceneUsedAt[c.id] = nil
+            let back = soloReturn.removeValue(forKey: c.id)
+            guard stageActive, let u else { continue }
+            showingScene[u] = nil
+            if let back, let prev = contexts.first(where: { $0.id == back }), showingOn(prev.id) == nil, !resolved(prev).isEmpty {
+                applyScene(prev, on: u)
+            }
+            stageLog.append(AppModel.clock.string(from: Date()) + " 自动场景「\(c.name)」的窗口没了，收掉")
+        }
+        saveContexts()
+        stageChanged()
     }
 
     /// 选了「保持单独」：什么都不用做（新场景已经在了）
@@ -553,6 +640,8 @@ struct PlacementOffer {
     var previous: DisplayStage
     var previousScene: String?
     var soloScene: String
+    /// 点 Dock 开的：卡片上多一排屏幕让你挑
+    var askScreen = false
 }
 
 // MARK: - 绑定：切一块屏的场景，别的屏跟着切

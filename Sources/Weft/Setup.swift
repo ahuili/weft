@@ -322,6 +322,15 @@ struct KeysPane: View {
             }
             Text("不想记任何快捷键也行：鼠标碰屏幕边缘就能打开后台，菜单栏图标里也有所有功能。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("换成精简键位") {
+                    model.settings.simplifyKeys(); model.settings.save(); model.onSettingsChanged()
+                }
+                .disabled(model.settings.sceneTrigger == .off && model.settings.slotModifier == .off)
+                Button("快捷键速查") { NotificationCenter.default.post(name: .init("WeftOpenCheatSheet"), object: nil) }
+                Text("精简 = 场景切换器不单独占键（⌃←/→ 就是它）、数字槽位关掉。之后随时能在这页改回来")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -619,6 +628,9 @@ struct StagePane: View {
                 Slider(value: bind(\.shelfDelay), in: 0.05...0.8, step: 0.05).frame(width: 200)
                 Text(String(format: "%.2f 秒", model.settings.shelfDelay)).monospacedDigit().foregroundStyle(.secondary)
             }
+            Toggle("屏幕边上露一个小把手", isOn: bind(\.shelfHandle)).disabled(model.settings.shelfEdge == .off)
+            Text("鼠标滑到把手上或点一下就打开侧栏，上下拖可以挪位置。旁边紧挨着另一块屏、鼠标一滑就过去碰不到边缘时，用它。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
         }
     }
 

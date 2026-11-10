@@ -896,6 +896,9 @@ public final class StageManager {
     /// 不在台上的窗口被切到前面时，先问界面层要不要自己处理（返回 true = 处理了）
     public var activationHandler: ((WindowInfo) -> Bool)?
 
+    /// 格子里的窗口没了，要不要让刚才在这格的窗口补回来（界面层：存好的场景里 App 退了 → 位置留着等它）
+    public var refillAllowed: (String, Int) -> Bool = { _, _ in true }
+
     /// 用户切到了某个窗口（⌘Tab、点 Dock、通知……）：不在台上就换进当前格子
     @discardableResult
     public func onFocus(_ id: UInt32) -> Bool { focusChanged(id) == .promoted }
@@ -958,7 +961,8 @@ public final class StageManager {
                     log("\(why)，这一摞下面的顶上来 \(next)")
                     continue
                 }
-                if let back = refill(u, i, byID) { log("\(why)，格子里补回刚才的窗口 \(back)") } else { log("\(why)，格子空出来") }
+                if !refillAllowed(u, i) { log("\(why)，格子留着等它回来") }
+                else if let back = refill(u, i, byID) { log("\(why)，格子里补回刚才的窗口 \(back)") } else { log("\(why)，格子空出来") }
             }
             // 压在下面的：关了 / 最小化 / 隐藏了就从这一摞里拿掉
             for (top, m) in stages[u]!.stacks {

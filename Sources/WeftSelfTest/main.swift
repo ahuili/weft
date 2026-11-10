@@ -452,6 +452,15 @@ do {
     st.toggleLock(display: "LAPTOP", slot: 0)
     _ = st.onFocus(31)
     check(st.stages["LAPTOP"]!.slots == [13, 31] && sm.isStashed(21), "⌘Tab 换掉右边")
+    // 界面层说「这格留着」（存好的场景里 App 退了）：不拿上一个窗口补
+    let w31 = w(31)
+    st.refillAllowed = { _, _ in false }
+    f.wins.removeAll { $0.id == 31 }
+    st.reconcile(mru: [])
+    check(st.stages["LAPTOP"]!.slots == [13, nil] && sm.isStashed(21), "场景里的 App 退了：格子留着等它，不补别的窗口 \(st.stages["LAPTOP"]!.slots)")
+    st.refillAllowed = { _, _ in true }
+    f.wins.append(w31)
+    _ = st.onFocus(31)
     f.wins.removeAll { $0.id == 31 }
     st.reconcile(mru: [])
     check(st.stages["LAPTOP"]!.slots == [13, 21] && !sm.isStashed(21) && w(21).frame == half[1], "关掉新来的：刚才那个回到格子里 \(st.stages["LAPTOP"]!.slots)")
@@ -696,7 +705,12 @@ do {
     check(st2.resolve(5, windows: re.filter { $0.bundleID != "com.tencent.xinWeChat" }) == .app(bundleID: "com.tencent.xinWeChat", name: "微信"),
           "微信窗口都关了：⌥5 打开微信")
     check(st2.resolve(9, windows: re) == .empty, "空槽位")
-    check(WeftSettings().slotModifier == .option && SlotModifier.controlOption.carbon == (KeyCombo.control | KeyCombo.option), "槽位修饰键默认 ⌥")
+    check(WeftSettings().slotModifier == .off && WeftSettings().sceneTrigger == .off && SlotModifier.controlOption.carbon == (KeyCombo.control | KeyCombo.option), "精简键位：数字槽位、场景切换器默认不占键")
+    var lean = WeftSettings(); lean.slotModifier = .option; lean.sceneTrigger = .doubleTap(.leftControl); lean.shelfTrigger = .doubleTap(.leftOption)
+    lean.simplifyKeys()
+    check(lean.slotModifier == .off && lean.sceneTrigger == .off && lean.shelfTrigger == .doubleTap(.leftOption) && lean.shelfHandle, "换成精简键位：侧栏的键留着")
+    let old = try! JSONDecoder().decode(WeftSettings.self, from: Data(#"{"slotModifier":"option","sceneTrigger":{"doubleTap":{"_0":"rightOption"}}}"#.utf8))
+    check(old.slotModifier == .option && old.sceneTrigger == .doubleTap(.rightOption), "老设置里的键位原样保留")
 }
 
 // MARK: - AI 排布解析 / 设置

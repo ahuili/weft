@@ -121,10 +121,14 @@ public struct WeftSettings: Codable, Equatable {
     /// 用快捷键打开侧栏（打开后按数字直达）
     public var shelfTrigger: Trigger = .doubleTap(.leftOption)
     /// 场景切换器（截图卡片左右滑）
-    /// 默认双击左 ⌃（右 ⌥ / 右 ⌘ / 左 ⌥ 默认已经给了总控 / 舞台 / 侧栏；MacBook 没有右 ⌃）
-    public var sceneTrigger: Trigger = .doubleTap(.leftControl)
+    /// 默认不占键：⌃← / ⌃→ 第一下浮出来的就是同一排卡片。想要单独的键可以在设置里给它一个
+    public var sceneTrigger: Trigger = .off
     /// 鼠标停在边缘多久才弹出
     public var shelfDelay: Double = 0.2
+    /// 屏幕边上露一个小把手：鼠标滑上去 / 点一下打开侧栏（旁边紧挨着另一块屏、边缘碰不到时靠它）
+    public var shelfHandle = true
+    /// 把手在屏幕边上的高度（0 = 最上，1 = 最下），可以上下拖
+    public var shelfHandleY: Double = 0.5
     /// 舞台窗口之间的间隙
     public var stageGap: Double = 10
     /// 舞台模式时用毛玻璃盖住桌面图标
@@ -134,7 +138,8 @@ public struct WeftSettings: Codable, Equatable {
     /// 舞台模式下，你用 ⌘Tab / 点 Dock 切到的窗口自动上台
     public var stageAutoPromote = true
     /// 数字槽位的修饰键
-    public var slotModifier: SlotModifier = .option
+    /// 默认关：⌥+数字会占掉 ¡™£¢∞ 这些符号，而且又是 18 个要记的键。想用的人在设置里打开
+    public var slotModifier: SlotModifier = .off
     /// 舞台模式下，⌃← / ⌃→ 和四指左右滑切换场景（像切系统桌面一样）
     public var sceneSwipe = true
     /// 随手窗口：这些 App 的窗口不进场景、不占格子、切场景时不藏，原样浮在上面（访达、预览这类随开随关的）
@@ -143,7 +148,7 @@ public struct WeftSettings: Codable, Equatable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case setupDone, hubTrigger, quickSwitch, stageTrigger, shelfEdge, shelfTrigger, sceneTrigger, shelfDelay, stageGap, stageCurtain, curtainLook, stageAutoPromote, slotModifier, sceneSwipe, floatingApps
+        case setupDone, hubTrigger, quickSwitch, stageTrigger, shelfEdge, shelfTrigger, sceneTrigger, shelfDelay, shelfHandle, shelfHandleY, stageGap, stageCurtain, curtainLook, stageAutoPromote, slotModifier, sceneSwipe, floatingApps
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,13 +160,10 @@ public struct WeftSettings: Codable, Equatable {
         stageTrigger = (try? c.decode(Trigger.self, forKey: .stageTrigger)) ?? d.stageTrigger
         shelfEdge = (try? c.decode(ShelfEdge.self, forKey: .shelfEdge)) ?? d.shelfEdge
         shelfTrigger = (try? c.decode(Trigger.self, forKey: .shelfTrigger)) ?? d.shelfTrigger
-        if let t = try? c.decode(Trigger.self, forKey: .sceneTrigger) { sceneTrigger = t }
-        else {
-            // 老设置里没有：挑一个没被占用的双击键
-            let taken = [hubTrigger, stageTrigger, shelfTrigger, quickSwitch]
-            sceneTrigger = [ModKey.leftControl, .rightOption, .rightControl].map { Trigger.doubleTap($0) }.first { !taken.contains($0) } ?? .off
-        }
+        sceneTrigger = (try? c.decode(Trigger.self, forKey: .sceneTrigger)) ?? d.sceneTrigger
         shelfDelay = (try? c.decode(Double.self, forKey: .shelfDelay)) ?? d.shelfDelay
+        shelfHandle = (try? c.decode(Bool.self, forKey: .shelfHandle)) ?? d.shelfHandle
+        shelfHandleY = (try? c.decode(Double.self, forKey: .shelfHandleY)) ?? d.shelfHandleY
         stageGap = (try? c.decode(Double.self, forKey: .stageGap)) ?? d.stageGap
         stageCurtain = (try? c.decode(Bool.self, forKey: .stageCurtain)) ?? d.stageCurtain
         curtainLook = (try? c.decode(CurtainLook.self, forKey: .curtainLook)) ?? d.curtainLook
@@ -173,6 +175,14 @@ public struct WeftSettings: Codable, Equatable {
 
     public static func load(_ store: Store = .shared) -> WeftSettings { store.load(WeftSettings.self, "settings.json") ?? WeftSettings() }
     public func save(_ store: Store = .shared) { store.save(self, "settings.json") }
+
+    /// 精简键位：只留舞台、快速切换、⌃←/→ 三样要记的，侧栏的键留给爱用键盘的人；场景切换器和数字槽位不占键
+    public mutating func simplifyKeys() {
+        let d = WeftSettings()
+        sceneTrigger = d.sceneTrigger
+        slotModifier = d.slotModifier
+        sceneSwipe = true
+    }
 
     /// 同一个触发方式不能给两个功能用
     public func conflicts() -> [String] {

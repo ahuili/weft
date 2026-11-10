@@ -33,6 +33,7 @@ final class PlacementChooser {
             pick: { [weak self] slot in self?.choose(slot) },
             keep: { [weak self] in self?.hide(keep: true) },
             float: { [weak self] in self?.floatIt() },
+            move: { [weak self] u in self?.move(u) },
             hover: { [weak self] slot in self?.highlight(slot) }))
         panel = p
         let primaryH = NSScreen.screens.first?.frame.height ?? d.frame.height
@@ -76,6 +77,13 @@ final class PlacementChooser {
         guard let o = offer else { return }
         hide(keep: false)
         model.floatOffer(o)
+    }
+
+    /// 点了另一块屏：新窗口的场景搬过去
+    private func move(_ u: String) {
+        guard let o = offer else { return }
+        hide(keep: false)
+        model.moveOffer(o, to: u)
     }
 
     func hide(keep: Bool) {
@@ -131,6 +139,7 @@ struct ChooserView: View {
     var pick: (Int?) -> Void
     var keep: () -> Void
     var float: () -> Void
+    var move: (String) -> Void = { _ in }
     var hover: (Int?) -> Void
 
     var body: some View {
@@ -141,7 +150,8 @@ struct ChooserView: View {
                     Image(nsImage: appIcon(o.window.pid)).resizable().frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("「\(o.window.appName)」单独开了一个新场景").font(.system(size: 13, weight: .bold))
-                        Text("要放进\(prevName)吗？点一块，它就换进那里").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(o.previous.windows.isEmpty ? "从 Dock 打开的：想放到哪块屏，点一下" : o.askScreen ? "点一块屏挪过去，或者点\(prevName)的一块换进去" : "要放进\(prevName)吗？点一块，它就换进那里")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button { float() } label: {
@@ -164,9 +174,15 @@ struct ChooserView: View {
                     }.buttonStyle(.plain).help(state.hovering ? "鼠标在卡片上，倒计时暂停" : "不理它也行：几秒后自动收起，保持单独")
                 }
                 HStack(alignment: .center, spacing: 12) {
-                    MiniStage(model: model, offer: o, pick: pick, hover: hover)
-                    if o.previous.spec.layout.slots < 4 {
-                        AddCellCard(offer: o, pick: pick, hover: hover)
+                    if !o.previous.windows.isEmpty {
+                        MiniStage(model: model, offer: o, pick: pick, hover: hover)
+                        if o.previous.spec.layout.slots < 4 {
+                            AddCellCard(offer: o, pick: pick, hover: hover)
+                        }
+                    }
+                    if o.askScreen {
+                        if !o.previous.windows.isEmpty { Divider().frame(height: 100) }
+                        ScreenRow(model: model, offer: o, move: move)
                     }
                     Spacer(minLength: 0)
                 }
@@ -292,4 +308,45 @@ struct GlowView: View {
 /// 不抢焦点的浮层里，第一下点击也要算数（默认第一下只是「激活窗口」，按钮不响应）
 final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+
+/// 点 Dock 开的窗口：几块屏按真实的相对位置画出来，点哪块就放到哪块
+struct ScreenRow: View {
+    @ObservedObject var model: AppModel
+    let offer: PlacementOffer
+    var move: (String) -> Void
+    @State private var over: String?
+
+    var body: some View {
+        let ds = model.profile.displays
+        let all = ds.reduce(CGRect.null) { $0.union($1.frame) }
+        let k = min(220 / max(all.width, 1), 118 / max(all.height, 1))
+        VStack(alignment: .leading, spacing: 6) {
+            Text("放到哪块屏").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+            ZStack(alignment: .topLeading) {
+                ForEach(ds, id: \.uuid) { d in
+                    let here = d.uuid == offer.display
+                    let on = over == d.uuid
+                    Button { if !here { move(d.uuid) } } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6).fill(here ? Color.purple.opacity(0.45) : on ? Color.purple.opacity(0.3) : Color.white.opacity(0.08))
+                            VStack(spacing: 2) {
+                                if here { Image(nsImage: appIcon(offer.window.pid)).resizable().frame(width: 18, height: 18) }
+                                Text(model.role(of: d.uuid).map(DisplayProfile.roleName) ?? d.name).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                                Text(here ? "现在在这" : "放这里").font(.system(size: 9)).foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: d.frame.width * k - 4, height: d.frame.height * k - 4)
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(here || on ? Color.purple : Color.white.opacity(0.2), lineWidth: here || on ? 2 : 1))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { inside in if inside { over = d.uuid } else if over == d.uuid { over = nil } }
+                    .offset(x: (d.frame.minX - all.minX) * k + 2, y: (d.frame.minY - all.minY) * k + 2)
+                }
+            }
+            .frame(width: all.width * k, height: all.height * k, alignment: .topLeading)
+        }
+    }
 }

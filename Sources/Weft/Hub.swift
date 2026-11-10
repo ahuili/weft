@@ -382,6 +382,10 @@ final class HubController: NSObject, NSWindowDelegate {
             else if !state.query.isEmpty { state.query = "" }
             else { hide() }
             return nil
+        case kVK_ANSI_Slash where e.modifierFlags.contains(.shift) && state.query.isEmpty:
+            // ? = 快捷键速查
+            NotificationCenter.default.post(name: .init("WeftOpenCheatSheet"), object: nil)
+            return nil
         case kVK_Return, kVK_ANSI_KeypadEnter:
             if model.tidyVisible { model.runTidy(); state.rebuild(model); return nil }
             guard let w = selectedWindow else {
