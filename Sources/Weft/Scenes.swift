@@ -554,6 +554,7 @@ extension AppModel {
             system.focus(w.id)
             // 它还在别的场景里、哪个都没摆着：先去最近用的那个，顶上给一排「也在」，点一下换过去
             if sceneShowing(sc) != nil, hits.count > 1, !hits.dropFirst().contains(where: { sceneShowing($0) != nil }) {
+                lastAltOffer = Date()
                 onOfferScenes(w, Array(hits.dropFirst().prefix(4)), u)
             }
             return true
@@ -583,6 +584,29 @@ extension AppModel {
                                             previousScene: prevScene, soloScene: solo.id, askScreen: askScreen))
         }
         return true
+    }
+
+    /// 点了 Dock 里的 App，它的窗口本来就在台上（不会走上面切场景那条路）：
+    /// 它还在别的场景里、那些场景都没摆着 → 顶上同样给一排「也在」
+    func offerAltsAfterDock() {
+        guard stageActive, Date().timeIntervalSince(lastAltOffer) > 1.5, let w = system.focusedWindow(),
+              let u = stage.locate(w.id)?.display ?? stage.stackLocate(w.id)?.display else { return }
+        let alts = scenesContaining(w).filter { sceneShowing($0) == nil }
+        guard !alts.isEmpty else { return }
+        lastAltOffer = Date()
+        onOfferScenes(w, Array(alts.prefix(4)), u)
+    }
+
+    /// 场景其实在别的屏上：正摆在另一块屏，或者它开着的窗口全在别的屏的台上。
+    /// 这块屏的切换器不列它（点了只会把那些窗口从别的屏抢过来）
+    func sceneElsewhere(_ c: WorkContext, from u: String) -> Bool {
+        if let s = sceneShowing(c) { return s != u }
+        let live = sceneSlots(c).compactMap(\.window).filter(\.axAvailable)
+        guard !live.isEmpty else { return false }
+        return live.allSatisfy { w in
+            guard let d = stage.locate(w.id)?.display ?? stage.stackLocate(w.id)?.display else { return false }
+            return d != u
+        }
     }
 
     /// 点 Dock 自动开的单独场景最多留 \(Self.maxAutoSolos) 个：再多就收掉最久没用、没摆着、你也没动过的

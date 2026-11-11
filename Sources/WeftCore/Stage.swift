@@ -294,7 +294,33 @@ public final class StageManager {
     public var freshWindow: TimeInterval = 4
 
     /// 进舞台时：现在开着的都算「原来就有的」
-    func rebaseline(_ live: [WindowInfo]) { seenBaseline = false; firstSeen = [:]; companions = []; noteSeen(live) }
+    func rebaseline(_ live: [WindowInfo]) { seenBaseline = false; firstSeen = [:]; companions = []; sleeping = [:]; noteSeen(live) }
+
+    /// 跟着 App 一起退到后台的附属窗口（窗口 → 它的 App）：App 回到台上，它也回到原来的位置浮着；
+    /// 你直接切到它（点 Dock、⌘Tab、App 里的菜单）也马上回来。设置、对话框不会切个场景就找不到了
+    public private(set) var sleeping: [UInt32: String] = [:]
+
+    /// 你直接切回来的附属窗口：它的 App 不在台上也先浮着，直到下次换场景
+    private var floatUntilSwitch = Set<UInt32>()
+
+    private func wake(_ id: UInt32, keep: Bool = false) {
+        sleeping[id] = nil
+        if keep { floatUntilSwitch.insert(id) }
+        guard let e = stash.release(id) else { return }
+        actions.setFrame(id, originals[id] ?? e.originalFrame)
+        companions.insert(id)
+        log("附属窗口回来了：\(e.title.isEmpty ? e.bundleID : e.title)")
+    }
+
+    /// App 回到台上了：它收起来的附属窗口一起回来
+    private func wakeCompanions(_ live: [WindowInfo]) {
+        guard !sleeping.isEmpty else { return }
+        let ids = Set(live.map(\.id))
+        sleeping = sleeping.filter { ids.contains($0.key) && stash.isStashed($0.key) }
+        let on = onStage
+        let back = Set(live.filter { on.contains($0.id) }.map(\.bundleID))
+        for (id, b) in sleeping where back.contains(b) { wake(id) }
+    }
 
     func noteSeen(_ live: [WindowInfo]) {
         let now = Date()
@@ -845,6 +871,7 @@ public final class StageManager {
     /// 同上，带叠放（key = 那一格最上面的窗口，value = 压在下面的，从最底下开始）
     public func applySlots(_ scene: [(display: String, spec: StageSpec, slots: [UInt32?], stacks: [UInt32: [UInt32]])], compact: Bool = false) {
         let live = actions.windows()
+        floatUntilSwitch.removeAll()
         if !isActive {
             remember(live, actions.profile())
             rebaseline(live)
@@ -884,7 +911,9 @@ public final class StageManager {
             needsOrder.insert(s.display)
         }
         markSpaces()
-        sweep(actions.windows())
+        let after = actions.windows()
+        sweep(after)
+        wakeCompanions(after)
         layoutAll()
         orderStacks()
         if let first = scene.first, let id = stages[first.display]?.windows.first {
@@ -950,6 +979,8 @@ public final class StageManager {
             if CGEventSource.buttonState(.combinedSessionState, button: .left) { return .later }
             return raiseInStack(id, focus: false) ? .promoted : .ignored
         }
+        // 切到了一个跟着 App 收起来的附属窗口（设置、对话框）：它回到原来的位置浮着，不用去找
+        if sleeping[id] != nil, stash.isStashed(id) { wake(id, keep: true); return .promoted }
         guard autoPromote else { return .ignored }
         guard Date().timeIntervalSince(lastOwnAction) >= promoteDelay else { return .later }
         let w = actions.windows().first(where: { $0.id == id })
@@ -1009,6 +1040,7 @@ public final class StageManager {
         }
         guard settled else { return }
         let hidden = sweep(live)
+        wakeCompanions(live)
         // 后台记录说藏着、其实又回到屏幕上的（App Store 这类会自己把窗口拉回来）：再藏一次
         let front = live.filter(\.axAvailable).min { $0.zIndex < $1.zIndex }?.id
         if stash.enforce(live: live.filter { $0.displayUUID.map { !away.contains($0) } ?? true }, except: hidden.union(onStage).union([front].compactMap { $0 })) > 0 {
@@ -1380,8 +1412,9 @@ public final class StageManager {
             guard let u = w.displayUUID, stagedDisplays.contains(u) else { continue }
             // 附属窗口：它的 App 还在台上就浮着；App 下台了就跟着退到后台（不再算附属）
             if companions.contains(w.id) || adoptCompanion(w, live: live) {
-                if live.contains(where: { on.contains($0.id) && $0.bundleID == w.bundleID }) { continue }
+                if floatUntilSwitch.contains(w.id) || live.contains(where: { on.contains($0.id) && $0.bundleID == w.bundleID }) { continue }
                 companions.remove(w.id)
+                sleeping[w.id] = w.bundleID
             }
             if originals[w.id] == nil { originals[w.id] = w.frame }
             if home[w.id] == nil { home[w.id] = u }

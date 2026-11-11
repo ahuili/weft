@@ -66,7 +66,8 @@ final class SceneSwitcher {
         let keep = state.selected?.id
         var items: [SceneItem] = []
         // 只列这块屏自己的场景（加上所属的屏没接、临时借住的）：在哪块屏切，就不会切出别的屏的窗口
-        let mine = model.switcherScenes(for: state.display).filter { !model.isBlank($0.id) }
+        // 已经摆在另一块屏上的不列：点它只会把窗口从那块屏抢过来
+        let mine = model.switcherScenes(for: state.display).filter { !model.isBlank($0.id) && !model.sceneElsewhere($0, from: state.display) }
         if state.hud {
             // 一个窗口都摆不出来的场景（窗口全关了 / 都在别的桌面上）不进来
             items = mine.filter { c in model.sceneSlots(c).contains { $0.window?.axAvailable == true } }.map { .scene($0) }

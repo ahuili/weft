@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var scenes = SceneSwitcher(model: model)
     lazy var chooser = PlacementChooser(model: model)
     lazy var altCard = SceneAltCard(model: model)
+    lazy var veil = ParkVeil(model: model)
     lazy var studio = SceneStudio(model: model)
     let sceneKeys = SceneKeys()
     let sceneSwipe = SceneSwipe()
@@ -30,6 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }.sorted().joined(separator: "+")
     }
     var sigterm: DispatchSourceSignal?
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        DockPresence.reopen()
+        return false
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -104,6 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupSceneGestures()
         // 上次开着舞台关机 / 退出的：等窗口出来，每块屏摆回上次的场景
         model.restoreSession()
+        DockPresence.install()
+        veil.start()
         // 还没有任何场景：一启动就打开场景工作台，先把场景建好（引导没走完时让引导先来）
         if model.settings.setupDone && model.scenes.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.studio.show() }
@@ -417,6 +425,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 chooser.show(PlacementOffer(display: u, window: w, previous: model.stage.stage(for: u) ?? DisplayStage(spec: StageSpec(.focus), slots: []),
                                             previousScene: model.showingScene[u], soloScene: "debug", askScreen: a.count > 1))
             }
+        case "dockalts":
+            model.lastAltOffer = .distantPast
+            let w = model.system.focusedWindow()
+            let out = "focused=\(w?.appName ?? "-") onStage=\(w.map { model.stage.isOnStage($0.id) } ?? false) scenes=\(w.map { model.scenesContaining($0).map { "\($0.name)\(model.sceneShowing($0) != nil ? "*" : "")" } } ?? [])"
+            if a.count > 1 { try? out.write(toFile: a[1], atomically: true, encoding: .utf8) }
+            model.offerAltsAfterDock()
         case "flow": quick.debugFlow()
         case "newdesk": model.newDesk(on: nil)
         case "studio": studio.show(select: a.count > 1 ? model.scenes.dropFirst((Int(a[1]) ?? 1) - 1).first?.id : nil)

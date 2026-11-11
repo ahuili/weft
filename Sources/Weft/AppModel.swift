@@ -65,6 +65,8 @@ final class AppModel: ObservableObject {
     var onOfferPlacement: (PlacementOffer) -> Void = { _ in }
     /// 点到的窗口还在别的几个场景里：给一排「也在」
     var onOfferScenes: (WindowInfo, [WorkContext], String) -> Void = { _, _, _ in }
+    /// 上次给「也在」的时间（同一下点击不给两次）
+    var lastAltOffer = Date.distantPast
     @Published var pinned: [WorkContext.Member] = []
     @Published var stashed: [StashEntry] = []
     @Published var proposal: [ContextProposal]?
@@ -566,7 +568,13 @@ final class AppModel: ObservableObject {
         if clickMonitor == nil {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
                 let p = NSEvent.mouseLocation
-                MainActor.assumeIsolated { self?.lastClick = (p, Date()) }
+                MainActor.assumeIsolated {
+                    self?.lastClick = (p, Date())
+                    // 点的是 Dock：App 起来、焦点稳定以后看看要不要给一排「也在」
+                    if self?.clickedDock() == true {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { MainActor.assumeIsolated { self?.offerAltsAfterDock() } }
+                    }
+                }
             }
         }
         stage.isSceneMember = { [weak self] w in self?.bestScene(containing: w) != nil }

@@ -208,7 +208,7 @@ final class QuickSwitchController {
         }
         let here = model.showingScene[u].flatMap { id in model.contexts.first { $0.id == id } }.flatMap { model.isBlank($0.id) ? nil : $0 }
         let scenes = model.switcherScenes(for: u).filter { c in
-            c.id != here?.id && !model.isBlank(c.id) && model.showingOn(c.id) == nil && model.sceneSlots(c).contains { $0.window?.axAvailable == true }
+            c.id != here?.id && !model.isBlank(c.id) && model.showingOn(c.id) == nil && !model.sceneElsewhere(c, from: u) && model.sceneSlots(c).contains { $0.window?.axAvailable == true }
         }.sorted { (model.sceneUsedAt[$0.id] ?? .distantPast) > (model.sceneUsedAt[$1.id] ?? .distantPast) }
         guard !under.isEmpty || !scenes.isEmpty else { return [] }
         var out: [FlowItem] = []
