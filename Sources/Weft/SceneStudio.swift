@@ -157,12 +157,15 @@ struct StudioView: View {
                         Button { state.pickSlot = nil } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 16)) }
                             .buttonStyle(.plain).foregroundStyle(.secondary).keyboardShortcut(.cancelAction)
                     }
-                    WindowPickList(model: model) { w in
+                    WindowPickList(model: model, pick: { w in
                         state.pickSlot = nil
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             if state.pickStack { model.stackSceneSlot(c.id, i, w) } else { model.setSceneSlot(c.id, i, w) }
                         }
-                    }
+                    }, pickApp: state.pickStack ? nil : { a in
+                        state.pickSlot = nil
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { model.setSceneSlotApp(c.id, i, bundleID: a.id) }
+                    })
                 }
                 .padding(14)
                 .frame(width: 420, height: 520)
@@ -228,6 +231,25 @@ struct StudioView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { state.selected = c.id }
                     }
+                    }
+                    if !model.trash.isEmpty {
+                        HStack {
+                            Text("🗑 最近收掉的（7 天内能找回）").font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("清空") { model.purgeTrash() }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.secondary)
+                        }.padding(.top, 10).padding(.horizontal, 4)
+                        ForEach(model.trash.reversed()) { c in
+                            HStack(spacing: 6) {
+                                Text(c.emoji).font(.system(size: 13))
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(c.name).font(.system(size: 11)).lineLimit(1)
+                                    Text(c.plan?.first?.members.filter { !$0.bundleID.isEmpty }.map { model.appName(bundleID: $0.bundleID) }.joined(separator: " + ") ?? "")
+                                        .font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                                Button("找回") { model.restoreScene(c.id) }.controlSize(.small)
+                            }.padding(.horizontal, 10).padding(.vertical, 3)
+                        }
                     }
                     Group {
                         Text("🪶 随手窗口（不进场景、切场景不藏）").font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
@@ -389,11 +411,32 @@ struct StudioView: View {
     var library: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("窗口").font(.system(size: 14, weight: .bold))
-            Text("拖进中间的格子").font(.system(size: 10)).foregroundStyle(.secondary)
+            Text("拖进中间的格子 · 搜得到没开的 App").font(.system(size: 10)).foregroundStyle(.secondary)
             TextField("搜索（支持拼音）", text: $state.search).textFieldStyle(.roundedBorder)
             ScrollView {
                 let inScene = Set(current.map { model.sceneSlots($0).compactMap { $0.window?.id } } ?? [])
                 let list = state.search.isEmpty ? model.mruOrder() : FuzzyMatcher.rank(model.windows, query: state.search)
+                let apps = state.search.isEmpty ? [] : AppCatalog.shared.search(state.search, windows: model.windows, limit: 6)
+                if !apps.isEmpty, let c = current {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("App（现在没有窗口）· 点一下放进第一个空格").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                        ForEach(apps) { a in
+                            Button {
+                                let ms = c.plan?.first?.members ?? []
+                                let slots = c.plan?.first?.layout.slots ?? 1
+                                let j = ms.firstIndex { $0.bundleID.isEmpty } ?? (ms.count < slots ? ms.count : slots - 1)
+                                withAnimation { model.setSceneSlotApp(c.id, j, bundleID: a.id) }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(nsImage: a.icon).resizable().frame(width: 18, height: 18)
+                                    Text(a.name).font(.system(size: 12)).lineLimit(1)
+                                    Spacer()
+                                    Text(a.running ? "开着" : "没开").font(.system(size: 9)).foregroundStyle(.secondary)
+                                }.padding(.vertical, 3).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }.padding(.bottom, 6)
+                }
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
                     ForEach(list) { w in
                         LibraryCard(model: model, window: w, used: inScene.contains(w.id))
@@ -494,7 +537,7 @@ struct SlotCell: View {
                     }.frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
-                .help("压在下面：\(it.window.map { $0.title.isEmpty ? $0.appName : $0.title } ?? "「\(it.member.title)」已关闭") · 点一下拿掉")
+                .help("压在下面：\(it.window.map { model.windowName($0) } ?? "「\(it.member.title)」已关闭") · 点一下拿掉")
             }
             if under.count < DisplayStage.maxStack - 1 {
                 Button { onStack() } label: {
@@ -526,13 +569,17 @@ struct SlotCell: View {
             VStack(spacing: 6) {
                 if let w {
                     Image(nsImage: appIcon(w.pid)).resizable().frame(width: 34, height: 34).shadow(radius: 4)
-                    Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Text(model.windowName(w)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                         .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(Color.black.opacity(0.55)))
                     if slot?.elsewhere == true {
                         Text("在别的系统桌面上").font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
                     }
                 } else if let m = slot?.member, !m.bundleID.isEmpty {
-                    Text("「\(m.title.isEmpty ? m.bundleID : m.title)」已关闭").font(.system(size: 11)).foregroundStyle(.secondary)
+                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: m.bundleID) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 34, height: 34).opacity(0.7)
+                    }
+                    Text("\(model.appName(bundleID: m.bundleID)) · 现在没开").font(.system(size: 11, weight: .semibold))
+                    Text("摆这个场景时自动打开").font(.system(size: 10)).foregroundStyle(.secondary)
                 } else {
                     Image(systemName: "plus.rectangle.on.rectangle").font(.system(size: 22, weight: .light))
                     Text("拖一个窗口进来，或点这里挑").font(.system(size: 11))
@@ -568,7 +615,10 @@ struct SlotCell: View {
 struct WindowPickList: View {
     @ObservedObject var model: AppModel
     var pick: (WindowInfo) -> Void
+    /// 没开着的 App 也能挑（放进场景，摆的时候自动打开）
+    var pickApp: ((AppEntry) -> Void)? = nil
     @State private var q = ""
+    var apps: [AppEntry] { pickApp == nil || q.isEmpty ? [] : AppCatalog.shared.search(q, windows: model.windows, limit: 6) }
     @FocusState private var searching: Bool
     var list: [WindowInfo] { Array((q.isEmpty ? model.mruOrder() : FuzzyMatcher.rank(model.windows, query: q)).prefix(40)) }
 
@@ -577,16 +627,30 @@ struct WindowPickList: View {
             TextField("搜索窗口（支持拼音）", text: $q).textFieldStyle(.roundedBorder)
                 .focused($searching)
                 .onAppear { DispatchQueue.main.async { searching = true } }
-                .onSubmit { if let w = list.first { pick(w) } }
+                .onSubmit { if let w = list.first { pick(w) } else if let a = apps.first { pickApp?(a) } }
             ScrollView {
                 VStack(spacing: 2) {
+                    ForEach(apps) { a in
+                        Button { pickApp?(a) } label: {
+                            HStack(spacing: 8) {
+                                Image(nsImage: a.icon).resizable().frame(width: 18, height: 18)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(a.name).font(.system(size: 12)).lineLimit(1)
+                                    Text(a.running ? "开着，但现在没有窗口 · 放进来，有窗口了自动补上" : "没开 · 放进来，摆这个场景时自动打开").font(.system(size: 10)).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("App").font(.system(size: 9, weight: .bold)).padding(.horizontal, 5).padding(.vertical, 1).background(Capsule().fill(Color.purple.opacity(0.3)))
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 4).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
                     ForEach(list) { w in
                         Button { pick(w) } label: {
                             HStack(spacing: 8) {
                                 Image(nsImage: appIcon(w.pid)).resizable().frame(width: 18, height: 18)
                                 VStack(alignment: .leading, spacing: 0) {
-                                    Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 12)).lineLimit(1)
-                                    Text(w.appName + (w.axAvailable ? "" : " · 在别的系统桌面")).font(.system(size: 10)).foregroundStyle(.secondary)
+                                    Text(model.windowName(w)).font(.system(size: 12)).lineLimit(1)
+                                    Text(model.windowDetail(w) + (w.axAvailable ? "" : " · 在别的系统桌面")).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer()
                             }
@@ -625,7 +689,8 @@ struct LibraryCard: View {
                 else if !window.axAvailable { Text("别处").font(.system(size: 8, weight: .bold)).foregroundStyle(.orange).padding(4) }
             }
             .opacity(window.axAvailable ? 1 : 0.6)
-            Text(window.title.isEmpty ? window.appName : window.title).font(.system(size: 10, weight: .medium)).lineLimit(1)
+            Text(model.windowName(window)).font(.system(size: 10, weight: .medium)).lineLimit(1)
+            if !model.windowDetail(window).isEmpty { Text(model.windowDetail(window)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1) }
         }
     }
 }

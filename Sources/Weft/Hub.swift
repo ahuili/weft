@@ -199,7 +199,8 @@ struct HubView: View {
                         Image(nsImage: t).resizable().aspectRatio(contentMode: .fit)
                             .frame(width: 240, height: 150).background(Color.black.opacity(0.25))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                        Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                        Text(model.windowName(w)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                        if !model.windowDetail(w).isEmpty { Text(model.windowDetail(w)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2) }
                         if let l = model.labels[w.id] { Text(l).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2) }
                     }
                     .frame(width: 240, alignment: .leading)
@@ -285,7 +286,7 @@ struct BarRow: View {
 
     var title: String {
         switch item {
-        case .window(let w): return w.title.isEmpty ? w.appName : w.title
+        case .window(let w): return model.windowName(w)
         case .app(let a): return a.name
         case .scene(let c, _): return c.name
         case .action(let a): return a.title
@@ -295,7 +296,8 @@ struct BarRow: View {
     var detail: String {
         switch item {
         case .window(let w):
-            var p = [w.appName]
+            var p: [String] = []
+            if !model.windowDetail(w).isEmpty { p.append(String(model.windowDetail(w).prefix(40))) }
             if model.stageActive { p.append(model.stage.isOnStage(w.id) ? "在台上" : "在后台") }
             if model.isManuallyStashed(w.id) { p.append("⏳ 稍后处理") }
             if let s = model.slotLabel(w.id) { p.append(s) }
@@ -382,6 +384,7 @@ final class HubController: NSObject, NSWindowDelegate {
             let u = state.display
             hide()
             model.switchScene(c, on: model.showingOn(c.id) ?? (model.belongs(c, to: u) ? u : nil))
+            model.launchMissing(c.id)
         case .action(let a):
             if a.closes { hide() }
             a.run()

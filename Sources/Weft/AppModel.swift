@@ -25,10 +25,22 @@ final class AppModel: ObservableObject {
     private var emptySlotPress: (Int, Date)?
     let thumbnails = ThumbnailService()
 
-    @Published var windows: [WindowInfo] = []
+    @Published var windows: [WindowInfo] = [] { didSet { sceneAssignCache = nil } }
     @Published var thumbs: [UInt32: NSImage] = [:]
     @Published var predictions: [UInt32: Double] = [:]
-    @Published var contexts: [WorkContext] = []
+    @Published var contexts: [WorkContext] = [] { didSet { sceneAssignCache = nil } }
+    /// 所有场景一起认出来的窗口（场景 id → 成员摊平后每个对应的窗口 / 是不是认得准）。窗口列表或场景一变就重算
+    var sceneAssignCache: [String: (ids: [UInt32?], sure: [Bool])]?
+    /// 这次运行里见过的窗口（判断「窗口没了」是你这次关掉的，还是重启后 / App 刚重开、只是还没认出来）
+    var seenWindows = Set<UInt32>()
+    /// 自动场景的窗口这次运行里出现过（之后它的窗口都没了才收掉；重启后 App 还没开的不收）
+    var autoSeen = Set<String>()
+    /// 最近收掉的场景（7 天内能找回来）
+    @Published var trash: [WorkContext] = []
+    /// 舞台开着时退出 / 重启：下次启动恢复
+    var stageWasOn = false
+    /// 刚摆出来、还有窗口没到的场景（App 正在启动）：窗口一出现就补进格子，到时间就不等了
+    var pendingFill: [String: Date] = [:]
     /// 场景组合（几块屏同时摆）
     @Published var combos: [SceneCombo] = []
     /// 每块屏现在摆着哪个场景（屏幕 → 场景 id）。这块屏上的调整会自动存进这个场景
@@ -51,6 +63,8 @@ final class AppModel: ObservableObject {
     private var clickMonitor: Any?
     /// 切到一个不在任何场景里的窗口：它单独开了新场景，界面问你要不要放进刚才那个场景的某一块
     var onOfferPlacement: (PlacementOffer) -> Void = { _ in }
+    /// 点到的窗口还在别的几个场景里：给一排「也在」
+    var onOfferScenes: (WindowInfo, [WorkContext], String) -> Void = { _, _, _ in }
     @Published var pinned: [WorkContext.Member] = []
     @Published var stashed: [StashEntry] = []
     @Published var proposal: [ContextProposal]?
@@ -99,6 +113,16 @@ final class AppModel: ObservableObject {
         contexts = split.contexts
         combos = (db.combos ?? []) + split.combos
         pinned = db.pinned
+        trash = (db.trash ?? []).filter { ($0.removedAt ?? .distantPast) > Date().addingTimeInterval(-7 * 86400) }
+        stageWasOn = db.stageWasOn ?? false
+        roleShowing = db.lastShowing ?? [:]
+        // 上次清理时备份下来、后来不见了的场景：放进「最近收掉的」，想要的可以找回来（只做一次）
+        if db.trash == nil, let old = store.load(ContextDB.self, "contexts.before-solo-cleanup.json") {
+            let have = Set(contexts.map(\.id))
+            let now = Date()
+            trash = old.contexts.filter { !have.contains($0.id) && $0.plan?.count == 1 }.map { var c = $0; c.removedAt = now; c.autoSolo = nil; return c }
+            DispatchQueue.main.async { [weak self] in self?.saveContexts() }
+        }
         // 老版本里自动开的单独场景一被碰就变成「正经场景」，越攒越多：一次性把它们认回来（🪟 + 只有一个窗口 + 没进组合）
         if db.soloMigrated != true {
             let inCombo = Set(combos.flatMap { $0.parts.map(\.sceneID) })
@@ -160,6 +184,7 @@ final class AppModel: ObservableObject {
 
     func shutdown() {
         habits.persistIfNeeded()
+        saveContexts()   // 每块屏上次摆的场景：下次启动 / 开机后照这个摆回去
         stash.restoreAll()
     }
 
@@ -195,6 +220,7 @@ final class AppModel: ObservableObject {
         if lastRoleMap == nil, !profile.roleMap.isEmpty { lastRoleMap = profile.roleMap; for (r, u) in profile.roleMap { knownDisplays[r] = u } }
         if contexts.contains(where: { $0.home == nil }) { assignHomes() }
         windows = system.windows().filter { $0.pid != me }
+        seenWindows.formUnion(windows.map(\.id))
         stash.prune(live: windows)
         stashed = stash.entries
         predictions = habits.predict(windows)
@@ -483,6 +509,7 @@ final class AppModel: ObservableObject {
 
     func beginStage() {
         stageActive = true
+        if !stageWasOn { stageWasOn = true; saveContexts() }
         lastStageFocus = nil
         if !profile.roleMap.isEmpty { lastRoleMap = profile.roleMap; for (r, u) in profile.roleMap { knownDisplays[r] = u } }
         assignHomes()
@@ -525,6 +552,7 @@ final class AppModel: ObservableObject {
                     self.stage.reconcile(mru: self.habits.mru)
                     if self.stage.stages != before.0 || self.stash.entries != before.1 { self.stageChanged() }
                     self.reapAutoSolos()
+                    self.fillPending()
                 }
             }
         }
@@ -759,9 +787,12 @@ final class AppModel: ObservableObject {
         system.onFocusChange = {}
         if let o = activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); activationObserver = nil }
         stageActive = false
+        stageWasOn = false
+        pendingFill.removeAll()
         for id in Set(showingScene.values) { dropIfBlank(id) }
         handMoved.removeAll(); pendingLeft.removeAll()
         showingScene.removeAll()
+        saveContexts()
         stashed = stash.entries
         stageChanged()
         onStageChanged(false)
@@ -935,7 +966,7 @@ final class AppModel: ObservableObject {
     }
 
     func delete(_ c: WorkContext) {
-        contexts.removeAll { $0.id == c.id }
+        trashScenes([c.id])
         saveContexts()
     }
 
@@ -952,6 +983,9 @@ final class AppModel: ObservableObject {
         }
         db.combos = combos
         db.soloMigrated = true
+        db.trash = Array(trash.suffix(60))
+        db.stageWasOn = stageWasOn
+        db.lastShowing = roleShowing
         store.save(db, "contexts.json")
         objectWillChange.send()
     }

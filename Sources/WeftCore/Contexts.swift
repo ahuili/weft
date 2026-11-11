@@ -26,6 +26,8 @@ public struct WorkContext: Codable, Identifiable, Equatable {
     public var autoSolo: Bool?
     /// 这个场景属于哪块屏：laptop / ext1 / ext2…（见 DisplayProfile.role）。nil = 还没归屏（老数据），每块屏都列出来
     public var home: String?
+    /// 收进回收站的时间（只在 ContextDB.trash 里有值）
+    public var removedAt: Date?
 
     public init(id: String = UUID().uuidString, name: String, emoji: String, color: Int, members: [Member]) {
         self.id = id; self.name = name; self.emoji = emoji; self.color = color; self.members = members
@@ -142,6 +144,12 @@ public struct ContextDB: Codable {
     public var pinned: [WorkContext.Member] = []
     /// 老数据里「自动开的单独场景」已经补过标记了
     public var soloMigrated: Bool?
+    /// 最近收掉的场景（自动收掉的、你删的）：7 天内能在场景工作台里找回来
+    public var trash: [WorkContext]?
+    /// 舞台模式开着时退出 / 重启的：下次启动自动恢复舞台，每块屏摆回上次的场景
+    public var stageWasOn: Bool?
+    /// 每块屏（位置：laptop / ext1…）上次摆的场景
+    public var lastShowing: [String: String]?
     public init() {}
 }
 
@@ -161,6 +169,51 @@ public enum ContextResolver {
             }
         }
         return out
+    }
+
+    /// 所有场景一起认窗口。groups = 每个场景一组成员（排好优先级：正摆着的、最近用过的在前），返回每组每个成员对应的窗口。
+    ///
+    /// 只靠「上次的窗口编号 + 标题像不像」认不出两种情况：电脑重启（窗口编号全换了）和标题一直在变的 App
+    /// （Claude、Codex、ChatGPT 的窗口标题就是当前对话名，浏览器是当前标签页）。以前认不出就当成窗口没了，
+    /// 场景里的这一格被删掉、点 Dock 又给它另开一个场景。所以分两轮：
+    /// 1. 认得准的：窗口编号还对得上，或者标题很像（>0.6）。一个窗口可以同时在几个场景里
+    /// 2. 还没认出来的成员，从同一个 App 里「谁都没认走」的窗口里领一个（最近用的场景先领，几个场景尽量分到不同的窗口）；
+    ///    这个 App 只开着一个窗口时，它就是那个窗口，别的场景认走了也一样领（Claude 这类单窗口 App 放在好几个场景里很正常）
+    /// 返回值的 strong[组][成员] = 是不是第 1 轮认出来的
+    public static func resolveAll(_ groups: [[WorkContext.Member]], in live: [WindowInfo]) -> (windows: [[UInt32?]], strong: [[Bool]]) {
+        var out = groups.map { [UInt32?](repeating: nil, count: $0.count) }
+        var strong = groups.map { [Bool](repeating: false, count: $0.count) }
+        var claimed = Set<UInt32>()
+        var usedIn = groups.map { _ in Set<UInt32>() }
+        for (g, ms) in groups.enumerated() {
+            for (k, m) in ms.enumerated() where !m.bundleID.isEmpty {
+                if let id = m.lastWindowID, live.contains(where: { $0.id == id && $0.bundleID == m.bundleID }), !usedIn[g].contains(id) {
+                    out[g][k] = id; strong[g][k] = true; usedIn[g].insert(id); claimed.insert(id)
+                }
+            }
+            for (k, m) in ms.enumerated() where !m.bundleID.isEmpty && out[g][k] == nil && !m.title.isEmpty {
+                let cands = live.filter { $0.bundleID == m.bundleID && !usedIn[g].contains($0.id) }
+                if let best = cands.max(by: { WindowMatcher.similarity($0.title, m.title) < WindowMatcher.similarity($1.title, m.title) }),
+                   WindowMatcher.similarity(best.title, m.title) > 0.6 {
+                    out[g][k] = best.id; strong[g][k] = true; usedIn[g].insert(best.id); claimed.insert(best.id)
+                }
+            }
+        }
+        var handed: [UInt32: Int] = [:]
+        for (g, ms) in groups.enumerated() {
+            for (k, m) in ms.enumerated() where !m.bundleID.isEmpty && out[g][k] == nil {
+                let mine = live.filter { $0.bundleID == m.bundleID && !usedIn[g].contains($0.id) }
+                let all = live.filter { $0.bundleID == m.bundleID }
+                let pool = all.count == 1 ? mine : mine.filter { !claimed.contains($0.id) }
+                guard let w = pool.min(by: { a, b in
+                    let ha = handed[a.id, default: 0], hb = handed[b.id, default: 0]
+                    if ha != hb { return ha < hb }
+                    return WindowMatcher.similarity(a.title, m.title) > WindowMatcher.similarity(b.title, m.title)
+                }) else { continue }
+                out[g][k] = w.id; usedIn[g].insert(w.id); handed[w.id, default: 0] += 1
+            }
+        }
+        return (out, strong)
     }
 
     public static func member(_ w: WindowInfo) -> WorkContext.Member {

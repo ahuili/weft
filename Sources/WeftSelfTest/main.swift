@@ -884,6 +884,30 @@ do {
     check(st9.present(w(12), on: "DELL", slot: 0) && st9.stages["DELL"]?.slots == [12], "空桌面里放进第一个窗口")
 }
 
+// MARK: - 一起认窗口：重启后、标题变了也认得出
+do {
+    let M = { (b: String, t: String, id: UInt32?) in WorkContext.Member(bundleID: b, title: t, lastWindowID: id) }
+    // 重启后：窗口编号全换了，Claude 的标题也换成了另一个对话
+    let live = [win(501, "Claude", "com.anthropic.claudefordesktop", "Mac 窗口管理工具讨论", CGRect(x: 0, y: 0, width: 900, height: 700), solo, z: 0),
+                win(502, "Codex", "com.openai.codex", "接口重构", CGRect(x: 0, y: 0, width: 900, height: 700), solo, z: 1),
+                win(503, "Google Chrome", "com.google.Chrome", "GitHub", CGRect(x: 0, y: 0, width: 900, height: 700), solo, z: 2),
+                win(504, "Google Chrome", "com.google.Chrome", "日历", CGRect(x: 0, y: 0, width: 900, height: 700), solo, z: 3)]
+    let groups = [[M("com.openai.codex", "旧的对话名", 77), M("com.anthropic.claudefordesktop", "另一个旧对话", 78)],   // 叠着的 Codex + Claude
+                  [M("com.tencent.xinWeChat", "微信", 79), M("com.anthropic.claudefordesktop", "又一个对话", 80)],     // 回消息：微信没开
+                  [M("com.google.Chrome", "日历", 81)],
+                  [M("com.google.Chrome", "某个早就关了的标签页", 82)]]
+    let r = ContextResolver.resolveAll(groups, in: live)
+    check(r.windows[0] == [502, 501] && r.strong[0] == [false, false], "重启后标题都变了：按 App 认回来 \(r.windows[0])")
+    check(r.windows[1] == [nil, 501], "只开着一个窗口的 App（Claude）放在两个场景里：两个都认它；没开的微信留空 \(r.windows[1])")
+    check(r.windows[2] == [504] && r.strong[2] == [true], "标题对得上的认得准")
+    check(r.windows[3] == [503], "Chrome 有好几个窗口：没认出来的从「谁都没认走」的里面领，不抢「日历」\(r.windows[3])")
+    let r2 = ContextResolver.resolveAll([[M("com.google.Chrome", "x", 999)], [M("com.google.Chrome", "y", nil)], [M("com.google.Chrome", "z", nil)]],
+                                        in: Array(live.suffix(2)))
+    check(Set(r2.windows.compactMap { $0[0] }.prefix(2)).count == 2, "几个场景领同一个 App 的窗口：尽量分到不同的窗口 \(r2.windows)")
+    let r3 = ContextResolver.resolveAll([[M("com.openai.codex", "", nil)]], in: live)
+    check(r3.windows[0] == [502], "按 App 加进场景的（没有标题）：开着就认它")
+}
+
 // MARK: - 叠放
 do {
     let f8 = FakeWindows(sampleWindows(solo), solo)

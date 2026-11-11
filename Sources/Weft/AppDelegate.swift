@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var deck = StageDeck(model: model)
     lazy var scenes = SceneSwitcher(model: model)
     lazy var chooser = PlacementChooser(model: model)
+    lazy var altCard = SceneAltCard(model: model)
     lazy var studio = SceneStudio(model: model)
     let sceneKeys = SceneKeys()
     let sceneSwipe = SceneSwipe()
@@ -60,7 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.onDropPreview = { [weak self] f, label in
             if let f { self?.deck.showDropPreview(f, label: label) } else { self?.deck.hideDropPreview() }
         }
-        model.onOfferPlacement = { [weak self] o in self?.chooser.show(o) }
+        model.onOfferPlacement = { [weak self] o in self?.altCard.hide(); self?.chooser.show(o) }
+        model.onOfferScenes = { [weak self] w, alts, u in self?.chooser.hide(keep: false); self?.altCard.show(w, alts, on: u) }
         model.onHideHub = { [weak self] in self?.hub.hide(); self?.shelf.hide() }
         deck.onExit = { [weak self] in self?.model.exitStage() }
         setup.tryHub = { [weak self] in self?.hub.show() }
@@ -100,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         watchDisplays()
         scenes.openStudio = { [weak self] id, new in self?.studio.show(select: id, new: new) }
         setupSceneGestures()
+        // 上次开着舞台关机 / 退出的：等窗口出来，每块屏摆回上次的场景
+        model.restoreSession()
         // 还没有任何场景：一启动就打开场景工作台，先把场景建好（引导没走完时让引导先来）
         if model.settings.setupDone && model.scenes.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.studio.show() }
@@ -404,6 +408,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "minimize": if a.count > 1, let id = UInt32(a[1]) { model.system.setMinimized(id, a.count > 2 ? a[2] != "0" : true) }
         case "focuswin": if a.count > 1, let id = UInt32(a[1]) { model.system.focus(id) }
         case "scenes": scenes.show()
+        case "login-on": LoginItem.set(true); Toast.show(LoginItem.enabled ? "已设成开机自动启动" : "没设成", seconds: 1.6)
+        case "restore": model.stageWasOn = true; model.restoreSession()
+        case "offer":
+            // 调试：用当前窗口弹一次「放进哪一块」看看样子（不建场景）
+            model.refresh(captureThumbs: false)
+            if let w = model.currentWindow, let u = model.stage.currentDisplay() ?? model.profile.main?.uuid {
+                chooser.show(PlacementOffer(display: u, window: w, previous: model.stage.stage(for: u) ?? DisplayStage(spec: StageSpec(.focus), slots: []),
+                                            previousScene: model.showingScene[u], soloScene: "debug", askScreen: a.count > 1))
+            }
         case "flow": quick.debugFlow()
         case "newdesk": model.newDesk(on: nil)
         case "studio": studio.show(select: a.count > 1 ? model.scenes.dropFirst((Int(a[1]) ?? 1) - 1).first?.id : nil)

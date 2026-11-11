@@ -15,18 +15,50 @@ extension AppModel {
         var member: WorkContext.Member
         /// 找到的窗口（可能在别的系统桌面上）
         var window: WindowInfo?
+        /// 认得准（窗口编号对得上 / 标题很像）；false = 按「同一个 App 里没人认领的窗口」认的
+        var sure = true
         var elsewhere: Bool { window.map { !$0.axAvailable } ?? false }
+    }
+
+    /// 场景的成员摊平：先是每一格最上面的，再是每一格压在下面的（从第 1 格开始，每格从最底下开始）
+    func sceneMembers(_ c: WorkContext) -> [WorkContext.Member] {
+        guard let pl = c.plan?.first else { return [] }
+        return pl.members + (pl.stacks ?? []).flatMap { $0 }
+    }
+
+    /// 所有场景一起认窗口（见 ContextResolver.resolveAll）：正摆着的、最近用过的场景先认
+    func sceneAssignment(_ c: WorkContext) -> (ids: [UInt32?], sure: [Bool]) {
+        let mine = sceneMembers(c)
+        if sceneAssignCache == nil {
+            let ordered = scenes.sorted { a, b in
+                let sa = showingScene.values.contains(a.id), sb = showingScene.values.contains(b.id)
+                if sa != sb { return sa }
+                return (sceneUsedAt[a.id] ?? .distantPast) > (sceneUsedAt[b.id] ?? .distantPast)
+            }
+            let r = ContextResolver.resolveAll(ordered.map { sceneMembers($0) }, in: windows)
+            var m: [String: (ids: [UInt32?], sure: [Bool])] = [:]
+            for (i, x) in ordered.enumerated() { m[x.id] = (r.windows[i], r.strong[i]) }
+            sceneAssignCache = m
+        }
+        if let a = sceneAssignCache?[c.id], a.ids.count == mine.count { return a }
+        let r = ContextResolver.resolveAll([mine], in: windows)
+        return (r.windows[0], r.strong[0])
+    }
+
+    /// 场景里认出来的所有窗口（含压在下面的）
+    func sceneWindowSet(_ c: WorkContext, sureOnly: Bool = false) -> Set<UInt32> {
+        let a = sceneAssignment(c)
+        return Set(a.ids.indices.compactMap { (!sureOnly || a.sure[$0]) ? a.ids[$0] : nil })
     }
 
     /// 场景每个格子现在对应哪个窗口
     func sceneSlots(_ c: WorkContext) -> [SceneSlot] {
         guard let pl = c.plan?.first else { return [] }
-        var used = Set<UInt32>()
-        return pl.members.map { m in
+        let a = sceneAssignment(c)
+        return pl.members.enumerated().map { j, m in
             // bundleID 为空 = 这一格故意空着
-            let w = m.bundleID.isEmpty ? nil : ContextResolver.resolve([m], in: windows.filter { !used.contains($0.id) }).first
-            if let w { used.insert(w.id) }
-            return SceneSlot(member: m, window: w)
+            let w = m.bundleID.isEmpty || j >= a.ids.count ? nil : a.ids[j].flatMap { window($0) }
+            return SceneSlot(member: m, window: w, sure: j < a.sure.count ? a.sure[j] : true)
         }
     }
 
@@ -100,12 +132,16 @@ extension AppModel {
         // 叠放：按格子找到那一格最上面的窗口，再找压在它下面的
         var stacks: [UInt32: [UInt32]] = [:]
         if let st = pl.stacks {
-            for (j, slot) in sceneSlots(c).enumerated() where j < st.count && !st[j].isEmpty {
-                guard let top = slot.window else { continue }
+            let a = sceneAssignment(c)
+            let tops = sceneSlots(c)
+            var off = pl.members.count
+            for (j, layer) in st.enumerated() {
+                defer { off += layer.count }
+                guard j < tops.count, let top = tops[j].window else { continue }
                 var ids: [UInt32] = []
-                for m in st[j] {
-                    let pool = windows.filter { !used.contains($0.id) && $0.id != top.id && !ids.contains($0.id) && $0.axAvailable }
-                    if let w = ContextResolver.resolve([m], in: pool).first { ids.append(w.id) }
+                for k in layer.indices where off + k < a.ids.count {
+                    guard let id = a.ids[off + k], id != top.id, !used.contains(id), !ids.contains(id), window(id)?.axAvailable == true else { continue }
+                    ids.append(id)
                 }
                 if !ids.isEmpty { stacks[top.id] = ids }
             }
@@ -124,14 +160,16 @@ extension AppModel {
 
     /// 把场景摆到某块屏上（nil = 现在操作的那块屏）。别的屏不受影响
     @discardableResult
-    func applyScene(_ c: WorkContext, on display: String?) -> Bool {
+    func applyScene(_ c: WorkContext, on display: String?, quiet: Bool = false, keepOthers: Bool = false) -> Bool {
         guard Permissions.accessibility else { Toast.show("需要先授予辅助功能权限"); return false }
         refresh(captureThumbs: false)
         guard let u = display ?? homeDisplay(c) ?? stage.currentDisplay() ?? profile.main?.uuid else { return false }
-        var used = Set<UInt32>()
+        // keepOthers：别的屏台上的窗口不拉过来（补位用，免得两块屏抢同一个窗口）
+        var used = keepOthers ? Set(profile.displays.filter { $0.uuid != u }.flatMap { stage.stage(for: $0.uuid)?.allWindows ?? [] }) : Set<UInt32>()
         let slots = sceneSlots(c)
         let away = slots.filter(\.elsewhere).count
         guard let p = placement(c, on: u, used: &used) else {
+            if quiet { return false }
             let blank = c.plan?.first?.members.allSatisfy(\.bundleID.isEmpty) ?? true
             Toast.show(blank ? "「\(c.name)」还没放窗口 · 在场景工作台里拖几个窗口进去" : away > 0 ? "「\(c.name)」的窗口都在别的系统桌面上 · 合并桌面后才能摆出来" : "「\(c.name)」的窗口都已经关了", seconds: 2.5)
             return false
@@ -141,6 +179,7 @@ extension AppModel {
         markShowing(c.id, on: u)
         refocusStage()
         let name = profile.displays.count > 1 ? (profile.display(uuid: u).map { $0.isBuiltin ? " → 笔记本" : " → \($0.name.prefix(10))" } ?? "") : ""
+        if quiet { return true }
         Toast.show("\(c.emoji) \(c.name)\(name)" + (away > 0 ? " · \(away) 个窗口在别的桌面上没摆" : ""), seconds: 1.4)
         return true
     }
@@ -237,7 +276,7 @@ extension AppModel {
     }
 
     func deleteSceneOrCombo(_ id: String) {
-        if contexts.contains(where: { $0.id == id }) { contexts.removeAll { $0.id == id } } else { combos.removeAll { $0.id == id } }
+        if contexts.contains(where: { $0.id == id }) { trashScenes([id]) } else { combos.removeAll { $0.id == id } }
         saveContexts()
     }
 
@@ -350,7 +389,7 @@ extension AppModel {
                 contexts[i].plan = [pl]
                 contexts[i].members = pl.members.filter { !$0.bundleID.isEmpty }
                 // 你往里加了第二个窗口：是你自己搭的场景了，不再跟着 App 退出收掉（只换版式 / 比例不算）
-                if contexts[i].members.count >= 2 { contexts[i].autoSolo = nil }
+                if contexts[i].members.count + (pl.stacks ?? []).reduce(0, { $0 + $1.count }) >= 2 { contexts[i].autoSolo = nil }
                 // 空桌面里放进了第一个窗口：名字跟着它叫
                 else if contexts[i].autoSolo == true, contexts[i].name == Self.blankName, let w = st.windows.first.flatMap({ window($0) }) {
                     contexts[i].name = soloName(w); contexts[i].emoji = "🪟"
@@ -464,6 +503,8 @@ extension AppModel {
         // App 还开着、只是这个窗口关了 → 你不要它了，场景里也去掉（不然切场景的卡片里老挂着它）
         // （App 的窗口一个都不剩也算：正在退出的那一瞬间进程还在；微信这种关窗 = 收起来的也一样）
         guard let w else {
+            // 这次运行里根本没见过它原来那个窗口（电脑刚重启、App 刚重开、窗口还没认出来）：留着，不能当成你关掉了
+            guard let id = m.lastWindowID, seenWindows.contains(id) else { return true }
             return NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty || !system.windows().contains { $0.bundleID == m.bundleID }
         }
         if !w.axAvailable || w.isMinimized { return true }     // 在别的系统桌面 / 最小化了
@@ -474,12 +515,16 @@ extension AppModel {
     }
 
     /// 一个窗口最该属于哪个场景：正摆着的优先，其次最近用过的，再其次场景里窗口少的（单独那个窗口的场景）
-    func bestScene(containing w: WindowInfo) -> WorkContext? {
-        let hits = scenes.filter { c in sceneSlots(c).contains { $0.window?.id == w.id } }
+    func bestScene(containing w: WindowInfo) -> WorkContext? { scenesContaining(w).first }
+
+    /// 有这个窗口的场景（含压在下面的），最该去的排前面：正摆着的 → 认得准的 → 最近用过的 → 窗口少的
+    func scenesContaining(_ w: WindowInfo) -> [WorkContext] {
+        let hits = scenes.filter { !isBlank($0.id) && sceneWindowSet($0).contains(w.id) }
         let scored = hits.map { c in
-            (c, (sceneShowing(c) != nil ? 1e12 : 0) + (sceneUsedAt[c.id]?.timeIntervalSince1970 ?? 0) - Double(c.plan?.first?.members.count ?? 0))
+            (c, (sceneShowing(c) != nil ? 1e13 : 0) + (sceneWindowSet(c, sureOnly: true).contains(w.id) ? 1e12 : 0)
+                + (sceneUsedAt[c.id]?.timeIntervalSince1970 ?? 0) - Double(c.plan?.first?.members.count ?? 0))
         }
-        return scored.max { $0.1 < $1.1 }?.0
+        return scored.sorted { $0.1 > $1.1 }.map(\.0)
     }
 
     /// 你点了 Dock / ⌘Tab / 通知，切到一个没在台上的窗口：
@@ -500,11 +545,17 @@ extension AppModel {
             system.focus(w.id)
             return true
         }
-        if let sc = bestScene(containing: w) {
+        let hits = scenesContaining(w)
+        if let sc = hits.first {
             // 场景正摆在某块屏上就去那块屏；不然回到它所属的那块屏（大屏的场景不会被挤到笔记本上）；那块屏没接才摆在你正在用的屏
             let u = showingOn(sc.id) ?? homeDisplay(sc) ?? here
             applyScene(sc, on: u)
+            if stage.stackLocate(w.id) != nil { stage.raiseInStack(w.id) }
             system.focus(w.id)
+            // 它还在别的场景里、哪个都没摆着：先去最近用的那个，顶上给一排「也在」，点一下换过去
+            if sceneShowing(sc) != nil, hits.count > 1, !hits.dropFirst().contains(where: { sceneShowing($0) != nil }) {
+                onOfferScenes(w, Array(hits.dropFirst().prefix(4)), u)
+            }
             return true
         }
         let prevStage = stage.stage(for: here)
@@ -542,13 +593,14 @@ extension AppModel {
         guard extra > 0 else { return }
         let old = autos.sorted { (sceneUsedAt[$0.element.id]?.timeIntervalSince1970 ?? Double($0.offset)) < (sceneUsedAt[$1.element.id]?.timeIntervalSince1970 ?? Double($1.offset)) }
             .prefix(extra).map(\.element.id)
-        contexts.removeAll { old.contains($0.id) }
+        trashScenes(Array(old))
     }
 
+    /// 自动场景的名字：用 App 名，不用窗口标题（Claude、浏览器的标题一直在变，场景名跟着就对不上了）
     func soloName(_ w: WindowInfo) -> String {
-        let same = windows.filter { $0.bundleID == w.bundleID }.count
-        guard same > 1, !w.title.isEmpty, w.title != w.appName else { return w.appName }
-        return "\(w.appName) · \(w.title.prefix(14))"
+        let same = windows.filter { $0.bundleID == w.bundleID }.sorted { $0.id < $1.id }
+        guard same.count > 1, let i = same.firstIndex(where: { $0.id == w.id }) else { return w.appName }
+        return "\(w.appName) \(i + 1)"
     }
 
     /// 选了「放进刚才那个场景的第 slot 块」（nil = 多加一格）：回到刚才的场景，这一块换成它；刚才自动开的单独场景删掉
@@ -651,22 +703,25 @@ extension AppModel {
     func reapAutoSolos() {
         let autos = contexts.filter { $0.autoSolo == true }
         guard !autos.isEmpty else { return }
-        let live = system.windows()
+        let live = system.windows().filter { $0.pid != ProcessInfo.processInfo.processIdentifier }
         guard !live.isEmpty else { return }
         var gone: [WorkContext] = []
         for c in autos {
             if c.members.isEmpty { continue }   // 空桌面：切走时才收
             if let t = sceneUsedAt[c.id], Date().timeIntervalSince(t) < 4 { continue }   // 刚开的：窗口可能还没冒出来
-            guard ContextResolver.resolve(c.members, in: live).isEmpty else { continue }
-            let dead = c.members.allSatisfy { m in
-                NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty || (m.lastWindowID.map { !system.exists($0) } ?? true)
+            // 这次运行里它的窗口一次都没出现过（电脑刚重启、App 还没开）：不收，等 App 开了还认得回来
+            let ms = sceneMembers(c).filter { !$0.bundleID.isEmpty }
+            if ContextResolver.resolveAll([ms], in: live).windows[0].contains(where: { $0 != nil }) { autoSeen.insert(c.id); continue }
+            guard autoSeen.contains(c.id) else { continue }
+            let dead = ms.allSatisfy { m in
+                NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty || !live.contains { $0.bundleID == m.bundleID }
             }
             if dead { gone.append(c) }
         }
         guard !gone.isEmpty else { return }
         for c in gone {
             let u = showingOn(c.id)
-            contexts.removeAll { $0.id == c.id }
+            trashScenes([c.id])
             sceneUsedAt[c.id] = nil
             let back = soloReturn.removeValue(forKey: c.id)
             guard stageActive, let u else { continue }
@@ -770,8 +825,117 @@ extension AppModel {
 
     /// 场景第 slot 格下面压着的窗口（从最底下开始；找不到的窗口 = 已关闭）
     func sceneStack(_ c: WorkContext, _ slot: Int) -> [(member: WorkContext.Member, window: WindowInfo?)] {
-        guard let st = c.plan?.first?.stacks, st.indices.contains(slot) else { return [] }
-        return st[slot].map { m in (m, ContextResolver.resolve([m], in: windows).first) }
+        guard let pl = c.plan?.first, let st = pl.stacks, st.indices.contains(slot) else { return [] }
+        let a = sceneAssignment(c)
+        let off = pl.members.count + st.prefix(slot).reduce(0) { $0 + $1.count }
+        return st[slot].enumerated().map { k, m in (m, off + k < a.ids.count ? a.ids[off + k].flatMap { window($0) } : nil) }
+    }
+
+    /// 把一个 App（没开着也行）放进场景的第 slot 格：摆这个场景时它没开就自动打开
+    func setSceneSlotApp(_ id: String, _ slot: Int, bundleID: String) {
+        editScene(id) { c in
+            guard var pl = c.plan?.first else { return }
+            let empty = WorkContext.Member(bundleID: "", title: "")
+            while pl.members.count <= slot { pl.members.append(empty) }
+            pl.members[slot] = WorkContext.Member(bundleID: bundleID, title: "")
+            c.plan = [pl]
+            c.members = pl.members.filter { !$0.bundleID.isEmpty }
+        }
+        launchMissing(id)
+    }
+
+    /// 场景里没开着的 App：打开它们（不抢焦点），窗口出来后补进格子
+    func launchMissing(_ id: String) {
+        guard let c = contexts.first(where: { $0.id == id }) else { return }
+        var opened = Set<String>()
+        for m in sceneMembers(c) where !m.bundleID.isEmpty && !opened.contains(m.bundleID) && !isFloating(m.bundleID) {
+            guard NSRunningApplication.runningApplications(withBundleIdentifier: m.bundleID).isEmpty,
+                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: m.bundleID) else { continue }
+            opened.insert(m.bundleID)
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = false
+            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in }
+        }
+        if !opened.isEmpty { pendingFill[id] = Date().addingTimeInterval(45) }
+    }
+
+    /// 刚摆出来的场景里还有窗口没到（App 正在启动 / 电脑刚开机）：窗口一出现就补进它的格子；别的屏台上的窗口不抢
+    func fillPending() {
+        guard stageActive, !pendingFill.isEmpty else { return }
+        let now = Date()
+        for (id, until) in pendingFill {
+            guard until > now, let u = showingOn(id), let c = contexts.first(where: { $0.id == id }) else { pendingFill[id] = nil; continue }
+            let want = sceneWindowSet(c).filter { window($0)?.axAvailable == true && !(window($0)?.isMinimized ?? true) }
+            let onHere = Set(stage.stage(for: u)?.allWindows ?? [])
+            let others = Set(profile.displays.filter { $0.uuid != u }.flatMap { stage.stage(for: $0.uuid)?.allWindows ?? [] })
+            let missing = want.subtracting(onHere).subtracting(others)
+            if !missing.isEmpty {
+                stageLog.append(AppModel.clock.string(from: Date()) + " 「\(c.name)」的窗口到了 \(missing.count) 个，补进格子")
+                applyScene(c, on: u, quiet: true, keepOthers: true)
+            }
+            if sceneMembers(c).filter({ !$0.bundleID.isEmpty }).count <= sceneWindowSet(c).count { pendingFill[id] = nil }
+        }
+    }
+
+    // MARK: 回收站
+
+    /// 收掉场景：放进「最近收掉的」，7 天内能找回来（还空着的空桌面直接扔）
+    func trashScenes(_ ids: [String]) {
+        let now = Date()
+        for id in ids {
+            guard let c = contexts.first(where: { $0.id == id }) else { continue }
+            contexts.removeAll { $0.id == id }
+            if c.members.isEmpty && c.plan?.first?.members.allSatisfy(\.bundleID.isEmpty) != false { continue }
+            var t = c
+            t.removedAt = now
+            trash.removeAll { $0.id == id }
+            trash.append(t)
+        }
+    }
+
+    func restoreScene(_ id: String) {
+        guard let i = trash.firstIndex(where: { $0.id == id }) else { return }
+        var c = trash.remove(at: i)
+        c.removedAt = nil
+        c.autoSolo = nil
+        contexts.append(c)
+        saveContexts()
+        Toast.show("\(c.emoji) 「\(c.name)」找回来了", seconds: 1.4)
+    }
+
+    func purgeTrash() { trash.removeAll(); saveContexts() }
+
+    // MARK: 重启后恢复
+
+    /// 上次是开着舞台退出 / 关机的：等窗口陆续出来，每块屏摆回上次的场景；App 还没开的窗口，开了以后自动补进格子
+    func restoreSession() {
+        guard stageWasOn, Permissions.accessibility, !stageActive else { return }
+        var tries = 0
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self else { t.invalidate(); return }
+                tries += 1
+                if self.stageActive && tries > 1 { t.invalidate(); return }   // 你已经自己开了
+                self.refresh(captureThumbs: false)
+                var pairs: [(WorkContext, String)] = []
+                var waiting = 0
+                for (r, u) in self.profile.roleMap {
+                    guard let c = self.lastScene(of: r) else { continue }
+                    if self.sceneWindowSet(c).isEmpty { waiting += 1; continue }
+                    pairs.append((c, u))
+                }
+                // 每块屏的场景都至少出来一个窗口了，或者等了半分钟：先摆出来，剩下的窗口到了再补
+                guard (waiting == 0 && !pairs.isEmpty && tries >= 2) || tries >= 15 else { return }
+                t.invalidate()
+                if pairs.isEmpty {
+                    if tries >= 15 { self.enterStage() }
+                    return
+                }
+                let n = self.applyMany(pairs)
+                for (c, _) in pairs { self.launchMissing(c.id); self.pendingFill[c.id] = Date().addingTimeInterval(90) }
+                if n > 0 { Toast.show("🎭 已恢复舞台 · " + pairs.map { "\($0.0.emoji) \($0.0.name)" }.joined(separator: " · "), seconds: 2.4) }
+            }
+        }
     }
 
     func setSceneLayout(_ id: String, _ layout: StageLayout) {

@@ -389,7 +389,7 @@ struct MiniCard: View {
             }
             .overlay(alignment: .topTrailing) { if hover { PlaceButtons(model: model, window: window).padding(4) } }
             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(hover ? Color.accentColor : .white.opacity(0.1), lineWidth: hover ? 2 : 1))
-            Text(window.title.isEmpty ? window.appName : window.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
+            Text(model.windowName(window)).font(.system(size: 11, weight: .medium)).lineLimit(1)
             if let l = model.labels[window.id] { Text(l).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1) }
         }
         .frame(width: 132, alignment: .leading)
@@ -413,8 +413,8 @@ struct WindowRow: View {
         HStack(spacing: 8) {
             Image(nsImage: appIcon(window.pid)).resizable().frame(width: showApp ? 22 : 16, height: showApp ? 22 : 16)
             VStack(alignment: .leading, spacing: 1) {
-                Text(window.title.isEmpty ? window.appName : window.title).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                let sub = [model.slotLabel(window.id), showApp ? window.appName : nil, model.labels[window.id]].compactMap { $0 }.joined(separator: " · ")
+                Text(model.windowName(window)).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                let sub = [model.slotLabel(window.id), model.windowDetail(window).isEmpty ? nil : String(model.windowDetail(window).prefix(36)), model.labels[window.id]].compactMap { $0 }.joined(separator: " · ")
                 if !sub.isEmpty { Text(sub).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer(minLength: 0)
@@ -496,6 +496,7 @@ struct HoverFrame: ViewModifier {
 /// 侧栏旁边浮出的大预览
 struct PeekView: View {
     let window: WindowInfo
+    var name: String? = nil
     let thumb: NSImage?
     let label: String?
     var body: some View {
@@ -512,7 +513,7 @@ struct PeekView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             HStack(spacing: 6) {
                 Image(nsImage: appIcon(window.pid)).resizable().frame(width: 16, height: 16)
-                Text(window.title.isEmpty ? window.appName : window.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(name ?? (window.title.isEmpty ? window.appName : window.title)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
             }
             if let label { Text(label).font(.system(size: 11)).foregroundStyle(.secondary) }
         }
@@ -798,7 +799,7 @@ final class ShelfController {
             peekPanel = n
             return n
         }()
-        let host = NSHostingView(rootView: PeekView(window: w, thumb: model.thumbs[w.id], label: model.labels[w.id]))
+        let host = NSHostingView(rootView: PeekView(window: w, name: model.windowName(w), thumb: model.thumbs[w.id], label: [model.windowDetail(w), model.labels[w.id] ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")))
         pp.contentView = host
         let size = host.fittingSize
         let rowMidY = p.frame.maxY - r.midY

@@ -99,7 +99,8 @@ struct FlowView: View {
                 switch it {
                 case .window(let w, _):
                     Image(nsImage: appIcon(w.pid)).resizable().frame(width: 18, height: 18)
-                    Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(model.windowName(w)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    if !model.windowDetail(w).isEmpty { Text(model.windowDetail(w)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1) }
                 case .scene(let c, _):
                     Text(c.emoji).font(.system(size: 14))
                     Text(c.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
@@ -131,13 +132,14 @@ struct QuickSwitchView: View {
             HStack(spacing: 16) {
                 ForEach(Array(state.items.enumerated()), id: \.element.id) { i, w in
                     WindowCard(window: w, thumb: model.thumbs[w.id], selected: i == state.index,
-                               accent: .accentColor, subtitle: w.appName, width: 196)
+                               accent: .accentColor, subtitle: model.windowDetail(w), width: 196, name: model.windowName(w))
                 }
             }
             if state.items.indices.contains(state.index) {
                 let w = state.items[state.index]
                 HStack(spacing: 8) {
-                    Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    Text(model.windowName(w)).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    if !model.windowDetail(w).isEmpty { Text(model.windowDetail(w)).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
                     if let l = model.labels[w.id] { Text(l).font(.system(size: 12)).foregroundStyle(.secondary) }
                     if let s = model.slotLabel(w.id) {
                         Text("下次直接 \(s)").font(.system(size: 11, weight: .semibold))

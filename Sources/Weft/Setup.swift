@@ -583,6 +583,7 @@ struct StagePane: View {
             Text("开启后每块屏幕只留 1~3 个窗口。用 ⌥Tab、侧栏、⌘Tab 或点 Dock 切到别的窗口，它就替换当前位置；◧ ◨ 可以直接放主位 / 副位。退出时后台窗口全部回到原位。")
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("切到的窗口自动上台（⌘Tab、点 Dock、点通知也算）", isOn: bind(\.stageAutoPromote))
+            Toggle("开机自动启动（开着舞台关机的，开机后每块屏摆回上次的场景）", isOn: Binding(get: { LoginItem.enabled }, set: { LoginItem.set($0); model.objectWillChange.send() }))
             HStack {
                 Text("桌面")
                 Picker("", selection: Binding(

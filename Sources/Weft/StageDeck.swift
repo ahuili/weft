@@ -692,8 +692,8 @@ struct SlotPickerView: View {
                             ForEach(Array(state.items.enumerated()), id: \.element.id) { i, w in
                                 Button { pick(w) } label: {
                                     WindowCard(window: w, thumb: model.thumbs[w.id], selected: i == state.index, accent: .purple,
-                                               badge: state.query.isEmpty ? "\(i + 1)" : nil, subtitle: w.appName, width: cardW,
-                                               flags: model.stage.fits(w.id, width: state.width) ? [] : ["可能太宽"])
+                                               badge: state.query.isEmpty ? "\(i + 1)" : nil, subtitle: model.windowDetail(w), width: cardW,
+                                               flags: model.stage.fits(w.id, width: state.width) ? [] : ["可能太宽"], name: model.windowName(w))
                                 }
                                 .buttonStyle(.plain)
                                 .onHover { if $0 { state.index = i } }
@@ -839,7 +839,7 @@ struct StackFanView: View {
             .shadow(color: .black.opacity(0.5), radius: selected ? 24 : 10, y: 8)
             HStack(spacing: 6) {
                 Image(nsImage: appIcon(w.pid)).resizable().frame(width: 18, height: 18)
-                Text(w.title.isEmpty ? w.appName : w.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(model.windowName(w)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
             }
             .foregroundStyle(.white)
             .opacity(selected ? 1 : 0.6)

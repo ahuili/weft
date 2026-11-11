@@ -49,6 +49,8 @@ struct WindowCard: View {
     var subtitle: String = ""
     var width: CGFloat = 232
     var flags: [String] = []
+    /// 固定的名字（AppModel.windowName）；不给就用标题
+    var name: String? = nil
 
     var height: CGFloat { width * 0.62 }
 
@@ -92,7 +94,7 @@ struct WindowCard: View {
             )
             .shadow(color: selected ? accent.opacity(0.55) : .black.opacity(0.25), radius: selected ? 14 : 6, y: 3)
 
-            Text(window.title.isEmpty ? window.appName : window.title)
+            Text(name ?? (window.title.isEmpty ? window.appName : window.title))
                 .font(.system(size: 13, weight: .semibold)).lineLimit(1).truncationMode(.middle)
                 .foregroundStyle(.primary)
             if !subtitle.isEmpty {

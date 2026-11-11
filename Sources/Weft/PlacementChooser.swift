@@ -15,6 +15,7 @@ final class PlacementChooser {
     private var glow: NSPanel?
     private var timer: Timer?
     private var offer: PlacementOffer?
+    private var ticks = 0
     private let state = ChooserState()
 
     init(model: AppModel) { self.model = model }
@@ -26,6 +27,7 @@ final class PlacementChooser {
         state.offer = o
         state.remaining = 1
         state.hovering = false
+        ticks = 0
         // 能变成 key（点得动按钮），但出现时不抢键盘：你正在新窗口里打字也不受影响
         let p = panel ?? KeyPanel.make(level: .popUpMenu)
         p.contentView = FirstClickHostingView(rootView: ChooserView(
@@ -51,7 +53,7 @@ final class PlacementChooser {
             p.animator().setFrame(target, display: true)
             p.animator().alphaValue = 1
         }
-        // 8 秒倒计时，鼠标停在卡片上时暂停
+        // 5 秒倒计时，鼠标停在卡片上时暂停
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -59,7 +61,10 @@ final class PlacementChooser {
                 let inside = p.frame.insetBy(dx: -8, dy: -8).contains(NSEvent.mouseLocation)
                 self.state.hovering = inside
                 if inside { return }
-                self.state.remaining -= 0.05 / 8
+                self.state.remaining -= 0.05 / 5
+                // 你已经去用别的窗口了（过了头一秒）：不再等，收起来
+                self.ticks += 1
+                if self.ticks > 20, self.ticks % 6 == 0, let o = self.offer, let f = self.model.system.focusedWindowID(), f != o.window.id { self.hide(keep: true) }
                 if self.state.remaining <= 0 { self.hide(keep: true) }
             }
         }

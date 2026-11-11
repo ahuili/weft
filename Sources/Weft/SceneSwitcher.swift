@@ -74,7 +74,8 @@ final class SceneSwitcher {
             items.append(.blank)
         } else {
             if model.profile.displays.count > 1 { items += model.combos.map { .combo($0) } }
-            items += mine.filter { !model.sceneDormant($0) }.map { .scene($0) }
+            // 窗口都没开的场景排在后面：点它会把 App 打开
+            items += mine.filter { !model.sceneDormant($0) }.map { .scene($0) } + mine.filter { model.sceneDormant($0) }.map { .scene($0) }
             items.append(.blank)
             items.append(.add)
         }
@@ -304,6 +305,7 @@ final class SceneSwitcher {
         case .scene(let c):
             hide()
             model.switchScene(c, on: u)
+            model.launchMissing(c.id)
         case .combo(let c):
             hide()
             model.applyCombo(c)
