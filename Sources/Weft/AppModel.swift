@@ -54,6 +54,10 @@ final class AppModel: ObservableObject {
     var sceneUsedAt: [String: Date] = [:]
     /// 自动开的单独场景是从哪个场景切过来的：它的 App 退了、场景收掉时回到那个场景
     var soloReturn: [String: String] = [:]
+    /// 空桌面刚开 / 挑窗口的面板刚关：这一小会儿里系统自己换的焦点不算你要把窗口放进空桌面
+    var deskQuietUntil = Date.distantPast
+    /// 空桌面上被系统塞过来、没收下的那个窗口：之后焦点还停在它身上也不收（点 Dock 才收）
+    var deskSkip: UInt32?
     /// 你亲手拖去另一块屏的窗口 → 它原来那块屏（原来那块屏的场景不再记着它）
     var handMoved: [UInt32: String] = [:]
     /// 刚被拖走、还没收尾的（窗口, 原来那块屏）
@@ -520,6 +524,13 @@ final class AppModel: ObservableObject {
         // 焦点变化靠通知即时响应（⌘Tab、点 Dock）；定时器只做兜底和每 2 秒一次的对账
         // 焦点一变（关了窗口、切了 App）就顺手对一次账：关窗后格子能马上补位，平时的对账就可以放慢
         system.onFocusChange = { [weak self] in MainActor.assumeIsolated { self?.checkStageFocus(); self?.reconcileSoon = true } }
+        if launchObserver == nil {
+            launchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
+                let b = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+                MainActor.assumeIsolated { if let b { self?.appLaunched(b) } }
+            }
+        }
         if activationObserver == nil {
             activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
@@ -595,6 +606,7 @@ final class AppModel: ObservableObject {
     }
 
     private var activationObserver: NSObjectProtocol?
+    private var launchObserver: NSObjectProtocol?
     private var lastMouseDown = Date.distantPast
     private var wasDown = false
 
@@ -794,6 +806,7 @@ final class AppModel: ObservableObject {
         stageTimer?.invalidate(); stageTimer = nil
         system.onFocusChange = {}
         if let o = activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); activationObserver = nil }
+        if let o = launchObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); launchObserver = nil }
         stageActive = false
         stageWasOn = false
         pendingFill.removeAll()

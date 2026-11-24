@@ -51,14 +51,27 @@ extension AppModel {
         return Set(a.ids.indices.compactMap { (!sureOnly || a.sure[$0]) ? a.ids[$0] : nil })
     }
 
-    /// 场景每个格子现在对应哪个窗口
+    /// 一格 = 一摞：这一格所有成员在 sceneMembers 摊平后的下标，从最底下到最上面
+    func pileIndices(_ pl: ScenePlacement, _ j: Int) -> [Int] {
+        guard pl.members.indices.contains(j) else { return [] }
+        let st = pl.stacks ?? []
+        let off = pl.members.count + st.prefix(j).reduce(0) { $0 + $1.count }
+        let under = j < st.count ? Array(off..<(off + st[j].count)) : []
+        return under + [j]
+    }
+
+    /// 场景每个格子现在对应哪个窗口。
+    /// 一格叠着几个窗口时，最上面那个没开（它的 App 退了）就由下面还开着的顶上：这一格不能因为退了一个 App 就算没了
     func sceneSlots(_ c: WorkContext) -> [SceneSlot] {
         guard let pl = c.plan?.first else { return [] }
         let a = sceneAssignment(c)
         return pl.members.enumerated().map { j, m in
             // bundleID 为空 = 这一格故意空着
-            let w = m.bundleID.isEmpty || j >= a.ids.count ? nil : a.ids[j].flatMap { window($0) }
-            return SceneSlot(member: m, window: w, sure: j < a.sure.count ? a.sure[j] : true)
+            if m.bundleID.isEmpty { return SceneSlot(member: m, window: nil) }
+            for k in pileIndices(pl, j).reversed() where k < a.ids.count {
+                if let w = a.ids[k].flatMap({ window($0) }) { return SceneSlot(member: m, window: w, sure: k < a.sure.count ? a.sure[k] : true) }
+            }
+            return SceneSlot(member: m, window: nil)
         }
     }
 
@@ -129,32 +142,26 @@ extension AppModel {
 
     private func placement(_ c: WorkContext, on u: String, used: inout Set<UInt32>) -> (display: String, spec: StageSpec, slots: [UInt32?], stacks: [UInt32: [UInt32]])? {
         guard let pl = c.plan?.first else { return nil }
-        // 叠放：按格子找到那一格最上面的窗口，再找压在它下面的
+        let a = sceneAssignment(c)
+        // 版式和位置照场景的来：每一格是一摞（从最底下到最上面），摆的是这一摞里现在开着的那几个，最上面那个开着的在顶上。
+        // 一摞全都没开（App 退了）/ 在别的系统桌面上：这一格空着等它回来，别的格子不往前挤（以前会挤，退一下 App 版式就乱了）
+        var slots: [UInt32?] = []
         var stacks: [UInt32: [UInt32]] = [:]
-        if let st = pl.stacks {
-            let a = sceneAssignment(c)
-            let tops = sceneSlots(c)
-            var off = pl.members.count
-            for (j, layer) in st.enumerated() {
-                defer { off += layer.count }
-                guard j < tops.count, let top = tops[j].window else { continue }
-                var ids: [UInt32] = []
-                for k in layer.indices where off + k < a.ids.count {
-                    guard let id = a.ids[off + k], id != top.id, !used.contains(id), !ids.contains(id), window(id)?.axAvailable == true else { continue }
-                    ids.append(id)
+        for j in pl.members.indices.prefix(pl.layout.slots) {
+            var live: [UInt32] = []
+            if !pl.members[j].bundleID.isEmpty {
+                for k in pileIndices(pl, j) where k < a.ids.count {
+                    guard let id = a.ids[k], !used.contains(id), !live.contains(id), let w = window(id), w.axAvailable,
+                          stage.stageable(w) || w.isMinimized else { continue }
+                    live.append(id)
                 }
-                if !ids.isEmpty { stacks[top.id] = ids }
             }
+            live.forEach { used.insert($0) }
+            slots.append(live.last)
+            if live.count > 1, let top = live.last { stacks[top] = Array(live.dropLast()) }
         }
-        // 版式和位置照场景的来：在别的桌面上的那一格空着，别的窗口不挪位；已经关掉的窗口不占格子
-        let slots = Array(liveSlots(c).map { s -> UInt32? in
-            guard let w = s.window, w.axAvailable, !used.contains(w.id), stage.stageable(w) || w.isMinimized else { return nil }
-            used.insert(w.id)
-            return w.id
-        }.prefix(pl.layout.slots))
+        while slots.last == .some(nil) { slots.removeLast() }
         guard slots.contains(where: { $0 != nil }) else { return nil }
-        stacks = stacks.filter { slots.contains($0.key) }
-        for ids in stacks.values { ids.forEach { used.insert($0) } }
         return (u, pl.spec, slots, stacks)
     }
 
@@ -367,25 +374,50 @@ extension AppModel {
             let old = contexts[i].plan?.first
             // 格子空着、但不是你把它请走的（窗口关了 / 最小化 / 隐藏 / 被另一块屏的场景借走了）：场景里继续记着它，
             // 不然退出一下微信、或者另一块屏摆了个也用微信的场景，这个场景就永远少了微信
+            // 叠放的也一样：一摞里某个 App 退了，台上这一摞少了它（最上面的退了，下面的顶上来），
+            // 场景里它还待在原来那一摞、原来的位置，App 再开就回到原样（以前它被挤去别的格子，或者直接从场景里丢了）
             if let old {
-                let was = sceneSlots(contexts[i])
+                let a = sceneAssignment(contexts[i])
                 let empty = WorkContext.Member(bundleID: "", title: "")
-                var ms = st.slots.indices.map { j in j < pl.members.count ? pl.members[j] : empty }
-                let here = Set(st.slots.compactMap { $0 })
-                for j in old.members.indices where j < was.count && !old.members[j].bundleID.isEmpty {
-                    if let w = was[j].window, here.contains(w.id) { continue }   // 还在台上
-                    guard keepInScene(was[j].window, member: old.members[j], display: u) else { continue }
-                    // 原来那格空着就回原位；摆的时候已关的窗口不占格子（往前挤了），就接在后面
-                    if j < ms.count, ms[j].bundleID.isEmpty { ms[j] = old.members[j] }
-                    else if let k = ms.firstIndex(where: { $0.bundleID.isEmpty }) { ms[k] = old.members[j] }
-                    else if ms.count < pl.layout.slots { ms.append(old.members[j]) }
+                let n = max(st.slots.count, pl.members.count)
+                // 台上每一格现在的样子，一摞从最底下到最上面
+                var piles: [[WorkContext.Member]] = (0..<n).map { j in
+                    guard j < pl.members.count, !pl.members[j].bundleID.isEmpty else { return [] }
+                    return (pl.stacks.map { j < $0.count ? $0[j] : [] } ?? []) + [pl.members[j]]
                 }
-                while ms.last?.bundleID.isEmpty == true { ms.removeLast() }
-                pl.members = ms
+                let here = Set(st.allWindows)
+                let flat = old.members + (old.stacks ?? []).flatMap { $0 }
+                // 台上这个窗口只是 Weft「猜」的（同一个 App 里没人认领的那个，标题对不上）：场景里还记原来那条，
+                // 不拿猜的窗口覆盖。以前 Chrome 一重启，标题还没加载出来时三个窗口随便分，摆出来一同步，
+                // 「AI相关」场景里就记成了「工作」那个窗口，之后一直错下去
+                for (j, pile) in piles.enumerated() {
+                    for (p, m) in pile.enumerated() {
+                        guard let id = m.lastWindowID,
+                              let k = a.ids.indices.first(where: { a.ids[$0] == id && !a.sure[$0] && $0 < flat.count }),
+                              flat[k].bundleID == m.bundleID, !flat[k].title.isEmpty else { continue }
+                        piles[j][p] = flat[k]
+                    }
+                }
+                for j in old.members.indices where !old.members[j].bundleID.isEmpty && j < pl.layout.slots {
+                    let ks = pileIndices(old, j)
+                    for (p, k) in ks.enumerated() where k < flat.count && !flat[k].bundleID.isEmpty {
+                        let w = k < a.ids.count ? a.ids[k].flatMap { window($0) } : nil
+                        if let w, here.contains(w.id) { continue }   // 还在台上
+                        guard keepInScene(w, member: flat[k], display: u) else { continue }
+                        while piles.count <= j { piles.append([]) }
+                        piles[j].insert(flat[k], at: min(p, piles[j].count))
+                    }
+                }
+                piles = piles.map { Array($0.suffix(DisplayStage.maxStack)) }
+                while piles.last?.isEmpty == true { piles.removeLast() }
+                pl.members = piles.map { $0.last ?? empty }
+                let under = piles.map { Array($0.dropLast()) }
+                pl.stacks = under.contains { !$0.isEmpty } ? under : nil
             }
             if old?.members.map(\.bundleID) != pl.members.map(\.bundleID) || old?.members.map(\.lastWindowID) != pl.members.map(\.lastWindowID)
                 || old?.layout != pl.layout || abs((old?.ratio ?? 0) - pl.ratio) > 0.005 || old?.mirrored != pl.mirrored
-                || old?.stacks?.map { $0.map(\.bundleID) } != pl.stacks?.map { $0.map(\.bundleID) } {
+                || old?.stacks?.map({ $0.map(\.bundleID) }) != pl.stacks?.map({ $0.map(\.bundleID) })
+                || old?.stacks?.map({ $0.map(\.lastWindowID) }) != pl.stacks?.map({ $0.map(\.lastWindowID) }) {
                 contexts[i].plan = [pl]
                 contexts[i].members = pl.members.filter { !$0.bundleID.isEmpty }
                 // 你往里加了第二个窗口：是你自己搭的场景了，不再跟着 App 退出收掉（只换版式 / 比例不算）
@@ -490,6 +522,8 @@ extension AppModel {
         // 先换成新场景再清屏：不然原来的场景会被当成「你把窗口都请走了」
         showingScene[u] = c.id
         sceneUsedAt[c.id] = Date()
+        deskQuietUntil = Date().addingTimeInterval(1.5)
+        deskSkip = system.focusedWindowID()
         stage.clearAll(display: u)
         saveContexts()
         stageChanged()
@@ -511,6 +545,7 @@ extension AppModel {
         if w.pid > 0, NSRunningApplication(processIdentifier: w.pid)?.isHidden == true { return true }
         if handMoved[w.id] == u { return false }                     // 你亲手把它拖去了另一块屏
         if let loc = stage.locate(w.id) { return loc.display != u }   // 被另一块屏借走了；还在这块屏 = 你挪了格子
+        if let loc = stage.stackLocate(w.id) { return loc.display != u }
         return false
     }
 
@@ -534,10 +569,20 @@ extension AppModel {
     @discardableResult
     func handleActivation(_ w: WindowInfo) -> Bool {
         guard stageActive, stage.stageable(w) else { return false }
+        // 刚开的 App 冒出来的新窗口：窗口列表还是上一次刷新的，里面没有它，认不出它属于哪个场景，
+        // 就会给它另开一个单独场景（App 退了再开，有时回得去、有时多出一个场景，就是这个时间差）
+        if window(w.id) == nil { refresh(captureThumbs: false) }
         let here = stage.currentDisplay() ?? profile.main?.uuid ?? ""
         let fromDock = clickedDock()
         // 这块屏是一张空桌面：你就是来拉窗口的，直接放进来（不跳去它原来的场景）
         if let sid = showingScene[here], isBlank(sid), stage.stage(for: here)?.windows.isEmpty != false {
+            // 不是你切过来的：清屏、关掉挑窗口的面板时，系统自己把焦点交给了随便哪个窗口。
+            // 以前这一下就把它塞进了空桌面（「一打开空桌面，第一个 App 自己就进去了」）。点了 Dock 的才算你要它
+            if !clickedDock(within: 3), Date() < deskQuietUntil || deskSkip == w.id {
+                deskSkip = w.id
+                return true
+            }
+            deskSkip = nil
             onPickSlot(here, -1)
             stage.present(w, on: here, slot: 0)
             stageChanged()
@@ -696,8 +741,8 @@ extension AppModel {
     }
 
     /// 刚才那一下鼠标是不是点在 Dock 上（Dock 所在的那条屏幕边）
-    func clickedDock() -> Bool {
-        guard let c = lastClick, Date().timeIntervalSince(c.time) < 60,
+    func clickedDock(within: TimeInterval = 60) -> Bool {
+        guard let c = lastClick, Date().timeIntervalSince(c.time) < within,
               let s = NSScreen.screens.first(where: { $0.frame.contains(c.at) }) else { return false }
         let dock = UserDefaults(suiteName: "com.apple.dock")
         let side = dock?.string(forKey: "orientation") ?? "bottom"
@@ -881,6 +926,16 @@ extension AppModel {
             NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in }
         }
         if !opened.isEmpty { pendingFill[id] = Date().addingTimeInterval(45) }
+    }
+
+    /// 某个 App 刚打开（退了再开、开机后才开）：正摆着、里面有它的场景等它的窗口出来，出来就补回原来那一格。
+    /// 不靠焦点：App 在后台启动、没抢焦点时也能回去
+    func appLaunched(_ bundleID: String) {
+        guard stageActive else { return }
+        for (u, id) in showingScene where profile.display(uuid: u) != nil {
+            guard let c = contexts.first(where: { $0.id == id }), sceneMembers(c).contains(where: { $0.bundleID == bundleID }) else { continue }
+            pendingFill[id] = Date().addingTimeInterval(45)
+        }
     }
 
     /// 刚摆出来的场景里还有窗口没到（App 正在启动 / 电脑刚开机）：窗口一出现就补进它的格子；别的屏台上的窗口不抢

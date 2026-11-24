@@ -77,7 +77,7 @@ final class SceneSwitcher {
             if model.profile.displays.count > 1 { items += model.combos.map { .combo($0) } }
             // 窗口都没开的场景排在后面：点它会把 App 打开
             items += mine.filter { !model.sceneDormant($0) }.map { .scene($0) } + mine.filter { model.sceneDormant($0) }.map { .scene($0) }
-            items.append(.blank)
+            // 列表里不再放「空桌面」那张卡：它删不掉、选到它还会清屏。要空桌面按 D，或者 ⌃→ 滑过最后一个场景
             items.append(.add)
         }
         state.items = items

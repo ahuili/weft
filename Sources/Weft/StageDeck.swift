@@ -141,6 +141,7 @@ final class StageDeck {
 
     func closePicker() {
         if let m = pickMonitor { NSEvent.removeMonitor(m); pickMonitor = nil }
+        if isPickerVisible { model.deskQuietUntil = Date().addingTimeInterval(1.2) }
         pickPanel?.orderOut(nil)
         refreshPlaceholders()
     }
