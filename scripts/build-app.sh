@@ -4,11 +4,14 @@
 #   --universal  同时编 Apple 芯片 + Intel，合成通用二进制（发布用）
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# TMPDIR 路径里有中文时 SwiftPM 会崩（Failed to parse target info）：换成 /tmp
+if printf '%s' "${TMPDIR:-}" | LC_ALL=C grep -q '[^ -~]'; then export TMPDIR=/tmp/; fi
 source scripts/repo.env
 VERSION=$(cat VERSION)
 INSTALL=0; UNIVERSAL=0
 for a in "$@"; do case $a in --install) INSTALL=1;; --universal) UNIVERSAL=1;; esac; done
-swift build -c release --product Weft 2>&1 | grep -v -E "PlatformPath|XCTest|xcrun" || true
+# 编译失败要停下来（以前输出被 grep 过滤掉、错误被吞，会把上一次的旧二进制装上去）
+swift build -c release --product Weft > .build/build-app.log 2>&1 || { grep -E "error" .build/build-app.log | head -20; echo "✗ 编译失败，完整输出见 .build/build-app.log"; exit 1; }
 BIN=.build/release/Weft
 [[ -x $BIN ]] || { echo "构建失败"; exit 1; }
 if [[ $UNIVERSAL == 1 ]]; then

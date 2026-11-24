@@ -39,8 +39,8 @@ final class ThumbnailService {
                         return (w.windowID, img)
                     }
                 }
-                for await (id, img) in group {
-                    if let img { results[id] = NSImage(cgImage: img, size: NSSize(width: img.width / 2, height: img.height / 2)) }
+                for await (id, img0) in group {
+                    if let img0 { let img = await MainActor.run { DemoMode.on } ? DemoMode.blur(img0) : img0; results[id] = NSImage(cgImage: img, size: NSSize(width: img.width / 2, height: img.height / 2)) }
                 }
             }
             for (k, v) in results { self.cache[k] = v }

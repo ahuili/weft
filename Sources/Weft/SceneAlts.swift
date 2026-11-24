@@ -145,6 +145,7 @@ extension AppModel {
 
     /// 副标题：现在的标题（和名字一样就不重复）
     func windowDetail(_ w: WindowInfo) -> String {
+        if DemoMode.on { return "" }
         let t = w.title.trimmingCharacters(in: .whitespaces)
         return t.isEmpty || t == w.appName ? "" : t
     }

@@ -61,7 +61,7 @@ struct SlotBar: View {
         .buttonStyle(.plain)
         .help(ghost.map { g in "\(model.slotKey)\(n) 还空着 · 推荐「\(g.appName) · \(g.title)」（你最常用的之一），点一下钉上" } ?? help(n, target))
         .contextMenu {
-            if case .window(let w) = target { Text("\(n) 号：\(w.appName) · \(w.title)") }
+            if case .window(let w) = target { Text("\(n) 号：\(w.appName) · \(w.shownTitle)") }
             if let cur = model.currentWindow { Button("把「\(cur.appName)」钉到 \(n) 号") { model.pinSlot(n, window: cur) } }
             if !isEmpty(target) { Button("清空 \(n) 号") { model.clearSlot(n) } }
         }
@@ -72,7 +72,7 @@ struct SlotBar: View {
     func help(_ n: Int, _ t: SlotTarget) -> String {
         let k = model.slotKey
         switch t {
-        case .window(let w): return "\(k)\(n)：\(w.appName) · \(w.title)"
+        case .window(let w): return "\(k)\(n)：\(w.appName) · \(w.shownTitle)"
         case .app(_, let name): return "\(k)\(n)：\(name)（窗口没开，按下会打开它）"
         case .empty: return "\(k)\(n) 还是空的：切到某个窗口后按 \(k)⇧\(n) 钉上来，或在窗口上右键"
         }

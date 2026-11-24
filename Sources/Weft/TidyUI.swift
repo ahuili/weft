@@ -107,7 +107,7 @@ struct TidySheet: View {
                 .toggleStyle(.checkbox).labelsHidden()
             Image(nsImage: appIcon(it.pid)).resizable().frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 1) {
-                Text(it.windowID == nil ? it.appName : "\(it.appName) · \(it.title)").font(.system(size: 13)).lineLimit(1)
+                Text(it.windowID == nil ? it.appName : (DemoMode.on ? it.appName : "\(it.appName) · \(it.title)")).font(.system(size: 13)).lineLimit(1)
                 Text(it.reason).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()

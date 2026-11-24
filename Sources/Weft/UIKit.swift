@@ -94,7 +94,7 @@ struct WindowCard: View {
             )
             .shadow(color: selected ? accent.opacity(0.55) : .black.opacity(0.25), radius: selected ? 14 : 6, y: 3)
 
-            Text(name ?? (window.title.isEmpty ? window.appName : window.title))
+            Text(name ?? window.shownTitle)
                 .font(.system(size: 13, weight: .semibold)).lineLimit(1).truncationMode(.middle)
                 .foregroundStyle(.primary)
             if !subtitle.isEmpty {

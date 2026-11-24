@@ -481,9 +481,13 @@ public final class SystemWindows: WindowActions {
         return AXUIElementPerformAction(b, kAXPressAction as CFString) == .success
     }
 
+    /// 挪窗口之前先告诉一声（演示模式要先把遮罩挪到目的地，不然窗口先到、遮罩晚一两帧，内容会露出来）
+    public var willSetFrame: ((UInt32, CGRect) -> Void)?
+
     @discardableResult
     public func setFrame(_ id: UInt32, _ frame: CGRect) -> Bool {
         guard let e = element(id) else { return false }
+        willSetFrame?(id, frame)
         // Chrome / Electron 在 AXEnhancedUserInterface 打开时会拒绝变大、还带动画（Rectangle、yabai 也是这么处理的）：
         // 改之前先关掉，改完恢复
         var pid: pid_t = 0

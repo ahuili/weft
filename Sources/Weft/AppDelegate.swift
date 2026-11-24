@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var altCard = SceneAltCard(model: model)
     lazy var veil = ParkVeil(model: model)
     lazy var studio = SceneStudio(model: model)
+    lazy var demo = DemoVeil()
     let sceneKeys = SceneKeys()
     let sceneSwipe = SceneSwipe()
     var statusItem: NSStatusItem!
@@ -245,6 +246,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         func pick(_ i: Int) { if a.count > i, let n = Int(a[i]), ds.indices.contains(n) { model.selectStageDisplay(ds[n].uuid) } }
         switch c {
         case "stage-on": model.enterStage()
+        // 演示模式（录视频用）：demo on|off
+        case "demo":
+            demo.set(a.count < 2 || a[1] != "off")
+            model.system.willSetFrame = DemoMode.on ? { [weak self] id, f in guard Thread.isMainThread else { return }; MainActor.assumeIsolated { self?.demo.willMove(id, to: f) } } : nil
+            model.thumbnails.prune(keep: []); model.thumbs = [:]
+            model.refresh()
+        // 场景切换器：scenes <屏幕序号> 打开；scenes-move <步数>；scenes-apply；scenes-hide
+        case "scenes": if a.count > 1, let n = Int(a[1]), ds.indices.contains(n) { scenes.show(display: ds[n].uuid) } else { scenes.show() }
+        case "scenes-move": if a.count > 1, let n = Int(a[1]) { scenes.move(n) }
+        case "scenes-apply": scenes.apply()
+        case "scenes-hide": scenes.hide()
+        // ⌃← → 那种卡片：peek <屏幕序号> <步数>；peek-end 松手
+        case "peek": if a.count > 2, let n = Int(a[1]), ds.indices.contains(n), let s = Int(a[2]) { scenes.peek(s, display: ds[n].uuid) }
+        case "peek-end": scenes.commitPeek()
+        // scene <屏幕序号> <场景名>：把这个场景摆到那块屏
+        case "scene":
+            if a.count > 2, let n = Int(a[1]), ds.indices.contains(n) {
+                let name = a.dropFirst(2).joined(separator: " ")
+                if let c = model.scenes.first(where: { $0.name == name }) ?? model.scenes.first(where: { $0.name.contains(name) }) { model.switchScene(c, on: ds[n].uuid) }
+            }
+        case "studio": studio.show(select: a.count > 1 ? model.scenes.first { $0.name.contains(a.dropFirst().joined(separator: " ")) }?.id : nil)
+        case "studio-hide": for w in NSApp.windows where w.title == "Weft 场景" { w.close() }
+        case "hub": hub.show()
+        case "quick": if a.count > 1, let n = Int(a[1]) { quick.step(n) }
+        case "quick-end": quick.debugClose()
         case "stage-off": model.exitStage()
         case "layout":
             pick(2)

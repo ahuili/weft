@@ -756,13 +756,13 @@ struct WheelHUD: View {
                         .opacity(i == state.index ? 1 : 0.55)
                         .contentShape(Rectangle())
                         .onTapGesture { pick(i) }
-                        .help("\(w.appName) · \(w.title)")
+                        .help("\(w.appName) · \(w.shownTitle)")
                 }
             }
             .animation(.easeOut(duration: 0.12), value: state.index)
             if state.ring.indices.contains(state.index) {
                 let w = state.ring[state.index]
-                Text("\(w.appName) · \(w.title.prefix(30))  ·  点图标直接换 · 松开 ⌥ 定下来").font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Text("\(w.appName) · \(w.shownTitle.prefix(30))  ·  点图标直接换 · 松开 ⌥ 定下来").font(.system(size: 11, weight: .medium)).lineLimit(1)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)

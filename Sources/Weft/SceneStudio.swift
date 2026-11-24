@@ -537,7 +537,7 @@ struct SlotCell: View {
                     }.frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
-                .help("压在下面：\(it.window.map { model.windowName($0) } ?? "「\(it.member.title)」已关闭") · 点一下拿掉")
+                .help("压在下面：\(it.window.map { model.windowName($0) } ?? "「\(DemoMode.on ? model.appName(bundleID: it.member.bundleID) : it.member.title)」已关闭") · 点一下拿掉")
             }
             if under.count < DisplayStage.maxStack - 1 {
                 Button { onStack() } label: {

@@ -4,3 +4,5 @@ dist/
 .DS_Store
 *.xcuserstate
 .swiftpm/
+promo/record/raw/
+promo/record/check/

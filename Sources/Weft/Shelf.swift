@@ -513,7 +513,7 @@ struct PeekView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             HStack(spacing: 6) {
                 Image(nsImage: appIcon(window.pid)).resizable().frame(width: 16, height: 16)
-                Text(name ?? (window.title.isEmpty ? window.appName : window.title)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(name ?? window.shownTitle).font(.system(size: 12, weight: .semibold)).lineLimit(1)
             }
             if let label { Text(label).font(.system(size: 11)).foregroundStyle(.secondary) }
         }
